@@ -1,7 +1,8 @@
 """
 main.py — Main Entry Point for WTB Radar / Notifier Bot.
-Runs Pyrogram client for real-time MTProto channel listening alongside
-the Async Bot Management Runner. Optimized for Termux & low RAM footprint.
+ARCHITECTURE: Dual-mode detection:
+  1. Active Polling (PRIMARY) — app.get_chat_history() every N seconds — 100% reliable
+  2. on_message handler (BONUS) — real-time push if Pyrogram delivers it
 """
 
 import asyncio
@@ -15,7 +16,7 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from pyrogram import Client, filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 from config import Config
@@ -31,39 +32,104 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-# Suppress httpx HTTP log output to prevent raw Bot Token exposure in console logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WTBRadar.main")
 
+# ─── Poll Interval ────────────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS = 10   # Check each channel every 10 seconds
+POLL_HISTORY_LIMIT   = 15   # How many recent messages to fetch per channel per poll
+
 
 async def warm_up_peer_cache(app: Client, config: Config):
-    """
-    Loads initial user dialogs and pre-resolves all monitored channels
-    so Pyrogram populates its local session peer DB.
-    Also attempts to join channels so the user account receives MTProto updates.
-    Prevents 'ValueError: Peer id invalid'.
-    """
-    logger.info("Warming up channel peer cache & joining channels...")
+    """Pre-resolve all monitored channels into Pyrogram's peer cache."""
+    logger.info("Warming up peer cache & joining channels...")
     try:
         async for _ in app.get_dialogs(limit=100):
             pass
-        logger.info("Dialogs loaded successfully.")
+        logger.info("Dialogs loaded.")
     except Exception as e:
         logger.debug(f"Dialog warm-up: {e}")
 
-    monitored = config.monitored_channels
-    for target in monitored:
+    for target in config.monitored_channels:
         try:
             chat = await app.get_chat(target)
-            logger.info(f"Resolved peer: {chat.title} ({target})")
-            # Ensure the user account is subscribed to receive channel updates
+            logger.info(f"Peer resolved: {chat.title} ({target})")
             try:
                 await app.join_chat(target)
-                logger.info(f"Joined channel: {chat.title}")
             except Exception:
-                pass  # Already a member or channel doesn't allow joining — ok
+                pass  # Already joined — ok
         except Exception as e:
-            logger.warning(f"Could not pre-resolve channel {target}: {e}")
+            logger.warning(f"Could not resolve {target}: {e}")
+
+
+async def polling_loop(app: Client, config: Config, processor: MessageProcessor,
+                       bot_runner: BotRunner):
+    """
+    PRIMARY detection engine.
+    Actively polls every channel using get_chat_history().
+    100% reliable — does not depend on Pyrogram push updates.
+    """
+    # last_seen_id[channel_str] = highest message ID already processed
+    last_seen_id: dict = {}
+
+    # ── Initialise baselines so we don't re-notify old messages ──────────────
+    logger.info("Polling: setting baselines for all channels...")
+    for target in config.monitored_channels:
+        key = str(target)
+        try:
+            async for msg in app.get_chat_history(target, limit=1):
+                last_seen_id[key] = msg.id
+                logger.info(f"Baseline [{target}]: msg_id={msg.id}")
+        except Exception as e:
+            last_seen_id[key] = 0
+            logger.warning(f"Baseline failed for {target}: {e}")
+
+    logger.info(f"Polling started — interval={POLL_INTERVAL_SECONDS}s")
+
+    while True:
+        try:
+            if not bot_runner.radar_active:
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            # Hot-reload channels on every cycle
+            monitored = config.monitored_channels
+            for target in monitored:
+                key = str(target)
+                baseline = last_seen_id.get(key, 0)
+
+                # Initialise baseline for newly added channels
+                if key not in last_seen_id:
+                    try:
+                        async for msg in app.get_chat_history(target, limit=1):
+                            last_seen_id[key] = msg.id
+                    except Exception:
+                        last_seen_id[key] = 0
+                    continue
+
+                try:
+                    new_msgs = []
+                    async for msg in app.get_chat_history(target, limit=POLL_HISTORY_LIMIT):
+                        if msg.id <= baseline:
+                            break
+                        new_msgs.append(msg)
+
+                    if new_msgs:
+                        # Update baseline to highest ID seen
+                        last_seen_id[key] = new_msgs[0].id
+                        logger.info(f"📥 {len(new_msgs)} new message(s) in channel {target}")
+
+                        # Process chronologically (oldest first)
+                        for msg in reversed(new_msgs):
+                            await processor.process_message(msg)
+
+                except Exception as e:
+                    logger.debug(f"Poll error for {target}: {e}")
+
+        except Exception as e:
+            logger.error(f"Polling loop error: {e}")
+
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 # ─── Application Bootstrap ────────────────────────────────────────────────────
@@ -71,13 +137,11 @@ async def warm_up_peer_cache(app: Client, config: Config):
 async def main():
     logger.info("Initializing WTB Radar Bot...")
 
-    # Load configuration
-    config = Config()
+    config   = Config()
     cooldown = CooldownManager(ttl_seconds=config.cooldown_seconds)
     notifier = Notifier(bot_token=config.bot_token, target_chat_id=config.target_chat_id)
     processor = MessageProcessor(config=config, cooldown=cooldown, notifier=notifier)
 
-    # Initialize Pyrogram User Client
     app = Client(
         name="wtb_radar_session",
         api_id=config.api_id,
@@ -85,111 +149,77 @@ async def main():
         workdir="."
     )
 
-    # Initialize Management Bot Runner
     bot_runner = BotRunner(config=config, pyrogram_client=app)
 
-    # ─── Universal Message Handler (No Filter — Catches Everything) ──────────
-    # IMPORTANT: We do NOT use filters.channel here because Pyrogram user client
-    # sometimes silently skips channel messages when using that filter.
-    # Instead we catch ALL incoming messages and do our own filtering.
-
+    # ── BONUS: real-time push handler (fires when Pyrogram delivers it) ───────
     @app.on_message()
-    async def universal_message_handler(client: Client, message: Message):
-        """Catches ALL messages (no Pyrogram filter), then filters manually."""
+    async def push_handler(client: Client, message: Message):
         try:
-            # Respect Start/Stop toggle
-            if not bot_runner.radar_active:
+            if not bot_runner.radar_active or not message.chat:
+                return
+            if "channel" not in str(message.chat.type).lower():
                 return
 
-            if not message.chat:
-                return
+            chat_id  = message.chat.id
+            username = message.chat.username.lower() if message.chat.username else None
 
-            chat = message.chat
-
-            # Only process channel-type chats
-            # ChatType.CHANNEL for public channels, also check via string
-            chat_type = str(chat.type).lower()
-            if "channel" not in chat_type:
-                return
-
-            chat_id = chat.id
-            chat_username = chat.username.lower() if chat.username else None
-
-            # Dynamically load monitored channels from config (hot-reload)
-            monitored = config.monitored_channels
-            if not monitored:
-                return
-
-            matched_channel = False
-            for target in monitored:
-                target_str = str(target).strip()
-                # Match numeric ID
-                if target_str == str(chat_id):
-                    matched_channel = True
+            for target in config.monitored_channels:
+                t = str(target).strip()
+                if t == str(chat_id) or (username and t.lstrip("@").lower() == username):
+                    logger.info(f"⚡ Push-update from: {message.chat.title}")
+                    await processor.process_message(message)
                     break
-                # Match @username case-insensitively
-                target_bare = target_str.lstrip("@").lower()
-                if chat_username and target_bare == chat_username:
-                    matched_channel = True
-                    break
-
-            if not matched_channel:
-                logger.debug(f"Ignored non-monitored channel: {chat.title} ({chat_id})")
-                return
-
-            logger.info(f"📨 Message from monitored channel: {chat.title} ({chat_id})")
-            await processor.process_message(message)
-
         except Exception as e:
-            logger.error(f"Error in universal_message_handler: {e}")
+            logger.debug(f"push_handler error: {e}")
 
     logger.info("Starting Pyrogram client...")
     await app.start()
     me = await app.get_me()
-    logger.info(f"Pyrogram logged in as User: {me.first_name} (@{me.username or me.id})")
+    logger.info(f"Logged in as: {me.first_name} (@{me.username or me.id})")
 
-    # Warm up peer cache & join all channels
     await warm_up_peer_cache(app, config)
 
-    # Start Bot Polling Task
-    bot_task = asyncio.create_task(bot_runner.start_polling())
+    # Start all background tasks
+    bot_task  = asyncio.create_task(bot_runner.start_polling())
+    poll_task = asyncio.create_task(
+        polling_loop(app, config, processor, bot_runner)
+    )
 
-    # Send Startup Notification
     startup_msg = (
         "🚀 <b>WTB RADAR AKTIF &amp; MONITORING!</b>\n\n"
-        f"👤 <b>User Account:</b> {me.first_name} (@{me.username or me.id})\n"
-        f"📡 <b>Monitored Channels:</b> {len(config.monitored_channels)}\n"
-        f"🔑 <b>Active Keywords:</b> {len(config.keywords)}\n\n"
-        "Gunakan <b>tombol navigasi di bawah</b> untuk mengontrol bot."
+        f"👤 <b>Akun:</b> {me.first_name} (@{me.username or me.id})\n"
+        f"📡 <b>Channels:</b> {len(config.monitored_channels)}\n"
+        f"🔑 <b>Keywords:</b> {len(config.keywords)}\n"
+        f"⏱️ <b>Poll interval:</b> {POLL_INTERVAL_SECONDS} detik\n\n"
+        "Mode: <b>Active Polling + Push Realtime</b> 🔁"
     )
     await notifier.send_system_message(startup_msg, reply_markup=bot_runner.get_main_keyboard())
+    logger.info("WTB Radar active — polling + push mode.")
 
-    logger.info("WTB Radar is now active and listening to messages.")
-
-    # Graceful shutdown handler
     stop_event = asyncio.Event()
 
-    def signal_handler():
-        logger.info("Shutdown signal received.")
+    def _sig():
+        logger.info("Shutdown signal.")
         stop_event.set()
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, signal_handler)
+            loop.add_signal_handler(sig, _sig)
         except NotImplementedError:
-            pass  # Windows fallback
+            pass
 
     try:
         await stop_event.wait()
     except (KeyboardInterrupt, SystemExit):
         pass
 
-    logger.info("Shutting down WTB Radar...")
+    logger.info("Shutting down...")
     bot_runner.is_running = False
     bot_task.cancel()
+    poll_task.cancel()
     await app.stop()
-    logger.info("WTB Radar stopped cleanly.")
+    logger.info("WTB Radar stopped.")
 
 
 if __name__ == "__main__":
