@@ -36,8 +36,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WTBRadar.main")
 
 # ─── Poll Interval ────────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 10   # Check each channel every 10 seconds
-POLL_HISTORY_LIMIT   = 15   # How many recent messages to fetch per channel per poll
+POLL_INTERVAL_SECONDS = 3    # Check each channel every 3 seconds (near-instant)
+POLL_HISTORY_LIMIT   = 10   # How many recent messages to fetch per channel per poll
 
 
 async def warm_up_peer_cache(app: Client, config: Config):
