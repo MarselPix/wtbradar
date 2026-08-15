@@ -22,29 +22,35 @@ class MessageProcessor:
 
     def contains_word(self, text: str, keyword: str) -> bool:
         """
-        Checks if text contains keyword.
-        - Case-insensitive always.
-        - For keywords with only word chars & spaces: uses \\b word boundary regex.
-        - For short 2-char keywords or special chars: uses substring match for reliability.
+        Checks if text contains keyword as a WHOLE WORD (not embedded inside another word).
+        Case-insensitive.
+
+        Examples:
+          keyword='am'  → matches "am bagus"   ✅
+          keyword='am'  → NO match "deskcam"   ❌ (embedded inside word)
+          keyword='cc'  → matches "cc dong"    ✅
+          keyword='cc'  → NO match "acc"       ❌ (embedded inside word)
         """
         kw = keyword.strip()
         if not kw:
             return False
 
-        text_lower = text.lower()
         kw_lower = kw.lower()
+        text_lower = text.lower()
 
-        # For very short keywords (1-2 chars) or keywords with special symbols,
-        # use simple substring match wrapped in word boundaries where possible
-        if len(kw) <= 2 or not re.match(r"^[\w\s]+$", kw, re.UNICODE):
-            return kw_lower in text_lower
+        # For keywords made of pure word chars (letters/digits/underscore),
+        # use word-boundary regex — works for ALL lengths including 'am', 'cc', 'yt'
+        if re.match(r"^[\w]+$", kw, re.UNICODE):
+            pattern = r"(?<![a-zA-Z0-9_])" + re.escape(kw_lower) + r"(?![a-zA-Z0-9_])"
+            return bool(re.search(pattern, text_lower))
 
-        # For normal multi-char keywords, use regex word boundary for precision
-        try:
-            pattern = r"(?<![a-zA-Z0-9])" + re.escape(kw_lower) + r"(?![a-zA-Z0-9])"
-            return bool(re.search(pattern, text_lower, re.IGNORECASE))
-        except re.error:
-            return kw_lower in text_lower
+        # For multi-word phrases (e.g. "yt famp"), match whole phrase with boundaries
+        if re.match(r"^[\w\s]+$", kw, re.UNICODE):
+            pattern = r"(?<![a-zA-Z0-9_])" + re.escape(kw_lower) + r"(?![a-zA-Z0-9_])"
+            return bool(re.search(pattern, text_lower))
+
+        # For keywords with special symbols (#wtb, @channel), simple substring match
+        return kw_lower in text_lower
 
     def check_match(self, text: str, include_set: Set[str], exclude_set: Set[str]) -> Optional[str]:
         """
