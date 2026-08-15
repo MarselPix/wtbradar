@@ -88,53 +88,60 @@ async def main():
     # Initialize Management Bot Runner
     bot_runner = BotRunner(config=config, pyrogram_client=app)
 
-    # ─── Universal Message Handler (Dynamic Hot-Reload) ───────────────────────
-    # Uses filters.channel to catch ALL channel messages.
-    # Channel membership check is done dynamically on every message,
-    # so newly-added channels are picked up WITHOUT restart.
+    # ─── Universal Message Handler (No Filter — Catches Everything) ──────────
+    # IMPORTANT: We do NOT use filters.channel here because Pyrogram user client
+    # sometimes silently skips channel messages when using that filter.
+    # Instead we catch ALL incoming messages and do our own filtering.
 
-    @app.on_message(filters.channel)
-    async def channel_message_handler(client: Client, message: Message):
-        """Catches ALL channel messages, then dynamically filters by monitored list."""
+    @app.on_message()
+    async def universal_message_handler(client: Client, message: Message):
+        """Catches ALL messages (no Pyrogram filter), then filters manually."""
+        try:
+            # Respect Start/Stop toggle
+            if not bot_runner.radar_active:
+                return
 
-        # Respect Start/Stop toggle
-        if not bot_runner.radar_active:
-            return
+            if not message.chat:
+                return
 
-        if not message.chat:
-            return
+            chat = message.chat
 
-        chat = message.chat
-        chat_id = chat.id
-        chat_username = chat.username.lower() if chat.username else None
+            # Only process channel-type chats
+            # ChatType.CHANNEL for public channels, also check via string
+            chat_type = str(chat.type).lower()
+            if "channel" not in chat_type:
+                return
 
-        # Dynamically load monitored channels from config (hot-reload)
-        monitored = config.monitored_channels
-        if not monitored:
-            return
+            chat_id = chat.id
+            chat_username = chat.username.lower() if chat.username else None
 
-        matched_channel = False
-        for target in monitored:
-            target_str = str(target).strip()
+            # Dynamically load monitored channels from config (hot-reload)
+            monitored = config.monitored_channels
+            if not monitored:
+                return
 
-            # Match numeric ID (e.g. -1001525948158 == -1001525948158)
-            if target_str == str(chat_id):
-                matched_channel = True
-                break
+            matched_channel = False
+            for target in monitored:
+                target_str = str(target).strip()
+                # Match numeric ID
+                if target_str == str(chat_id):
+                    matched_channel = True
+                    break
+                # Match @username case-insensitively
+                target_bare = target_str.lstrip("@").lower()
+                if chat_username and target_bare == chat_username:
+                    matched_channel = True
+                    break
 
-            # Match @username case-insensitively
-            target_bare = target_str.lstrip("@").lower()
-            if chat_username and target_bare == chat_username:
-                matched_channel = True
-                break
+            if not matched_channel:
+                logger.debug(f"Ignored non-monitored channel: {chat.title} ({chat_id})")
+                return
 
-        if not matched_channel:
-            # Verbose debug log — visible in Termux
-            logger.debug(f"Ignored message from non-monitored channel: {chat.title} ({chat_id})")
-            return
+            logger.info(f"📨 Message from monitored channel: {chat.title} ({chat_id})")
+            await processor.process_message(message)
 
-        logger.info(f"📨 Message received from monitored channel: {chat.title} ({chat_id})")
-        await processor.process_message(message)
+        except Exception as e:
+            logger.error(f"Error in universal_message_handler: {e}")
 
     logger.info("Starting Pyrogram client...")
     await app.start()
