@@ -1,0 +1,21 @@
+# Sensitive Configuration (Kredensial API & Bot Token)
+config.json
+
+# Session files (Telegram user session - SANGAT RAHASIA)
+*.session
+*.session-journal
+
+# Python cache & temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Runtime cache
+cooldown.json
+
+# Environment / local files
+.env
+.venv/
+env/
+venv/
