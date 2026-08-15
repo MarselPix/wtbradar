@@ -62,12 +62,32 @@ class Config:
 
     def add_keyword(self, keyword: str) -> bool:
         keyword = keyword.strip().lower()
-        if keyword in self.keywords:
+        if not keyword or keyword in self.keywords:
             return False
         with open(KEYWORDS_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n{keyword}")
         logger.info(f"Added keyword: {keyword}")
         return True
+
+    def add_keywords_bulk(self, raw_input: str) -> Tuple[int, int]:
+        """Parses comma or newline separated text and adds keywords. Returns (added_count, skipped_count)."""
+        items = [k.strip().lower() for k in re.split(r"[,\n]", raw_input) if k.strip()]
+        added = 0
+        skipped = 0
+        current = self.keywords
+        new_items = []
+        for item in items:
+            if item and item not in current and item not in new_items:
+                new_items.append(item)
+                added += 1
+            else:
+                skipped += 1
+
+        if new_items:
+            with open(KEYWORDS_FILE, "a", encoding="utf-8") as f:
+                for item in new_items:
+                    f.write(f"\n{item}")
+        return added, skipped
 
     def remove_keyword(self, keyword: str) -> bool:
         keyword = keyword.strip().lower()
@@ -81,14 +101,53 @@ class Config:
         logger.info(f"Removed keyword: {keyword}")
         return True
 
+    def remove_keywords_bulk(self, raw_input: str) -> Tuple[int, int]:
+        """Parses comma or newline separated text and removes keywords. Returns (removed_count, not_found_count)."""
+        to_remove = set(k.strip().lower() for k in re.split(r"[,\n]", raw_input) if k.strip())
+        current = self.keywords
+        removed = len(current.intersection(to_remove))
+        not_found = len(to_remove) - removed
+
+        remaining = sorted(k for k in current if k not in to_remove)
+        with open(KEYWORDS_FILE, "w", encoding="utf-8") as f:
+            f.write("# WTB Include Keywords\n")
+            if remaining:
+                f.write("\n".join(remaining))
+        return removed, not_found
+
+    def clear_keywords(self):
+        """Wipe all keywords."""
+        with open(KEYWORDS_FILE, "w", encoding="utf-8") as f:
+            f.write("# WTB Include Keywords\n")
+
     def add_exclude(self, keyword: str) -> bool:
         keyword = keyword.strip().lower()
-        if keyword in self.excludes:
+        if not keyword or keyword in self.excludes:
             return False
         with open(EXCLUDE_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n{keyword}")
         logger.info(f"Added exclude: {keyword}")
         return True
+
+    def add_excludes_bulk(self, raw_input: str) -> Tuple[int, int]:
+        """Parses comma or newline separated text and adds excludes. Returns (added_count, skipped_count)."""
+        items = [k.strip().lower() for k in re.split(r"[,\n]", raw_input) if k.strip()]
+        added = 0
+        skipped = 0
+        current = self.excludes
+        new_items = []
+        for item in items:
+            if item and item not in current and item not in new_items:
+                new_items.append(item)
+                added += 1
+            else:
+                skipped += 1
+
+        if new_items:
+            with open(EXCLUDE_FILE, "a", encoding="utf-8") as f:
+                for item in new_items:
+                    f.write(f"\n{item}")
+        return added, skipped
 
     def remove_exclude(self, keyword: str) -> bool:
         keyword = keyword.strip().lower()
@@ -101,6 +160,31 @@ class Config:
             f.write("\n".join(remaining))
         logger.info(f"Removed exclude: {keyword}")
         return True
+
+    def remove_excludes_bulk(self, raw_input: str) -> Tuple[int, int]:
+        """Parses comma or newline separated text and removes excludes. Returns (removed_count, not_found_count)."""
+        to_remove = set(k.strip().lower() for k in re.split(r"[,\n]", raw_input) if k.strip())
+        current = self.excludes
+        removed = len(current.intersection(to_remove))
+        not_found = len(to_remove) - removed
+
+        remaining = sorted(k for k in current if k not in to_remove)
+        with open(EXCLUDE_FILE, "w", encoding="utf-8") as f:
+            f.write("# Exclude Keywords\n")
+            if remaining:
+                f.write("\n".join(remaining))
+        return removed, not_found
+
+    def clear_excludes(self):
+        """Wipe all excludes."""
+        with open(EXCLUDE_FILE, "w", encoding="utf-8") as f:
+            f.write("# Exclude Keywords\n")
+
+    def clear_channels(self):
+        """Wipe all monitored channels."""
+        self.load()
+        self.data["channels"] = []
+        self.save()
 
     # ─── Channel Management ────────────────────────────────────────────────────
 
