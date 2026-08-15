@@ -63,6 +63,28 @@ def is_monitored_channel(config: Config):
     return filters.create(func, "DynamicMonitoredChannelFilter")
 
 
+async def warm_up_peer_cache(app: Client, config: Config):
+    """
+    Loads initial user dialogs and pre-resolves all monitored channels
+    so Pyrogram populates its local session peer DB.
+    Prevents 'ValueError: Peer id invalid'.
+    """
+    logger.info("Warming up channel peer cache...")
+    try:
+        async for _ in app.get_dialogs(limit=30):
+            pass
+    except Exception as e:
+        logger.debug(f"Dialog warm-up: {e}")
+
+    monitored = config.monitored_channels
+    for target in monitored:
+        try:
+            chat = await app.get_chat(target)
+            logger.info(f"Resolved peer cache for: {chat.title} ({target})")
+        except Exception as e:
+            logger.warning(f"Could not pre-resolve channel {target}: {e}")
+
+
 # ─── Application Bootstrap ────────────────────────────────────────────────────
 
 async def main():
@@ -94,6 +116,9 @@ async def main():
     await app.start()
     me = await app.get_me()
     logger.info(f"Pyrogram logged in as User: {me.first_name} (@{me.username or me.id})")
+
+    # Warm up peer cache to fix ValueError: Peer id invalid
+    await warm_up_peer_cache(app, config)
 
     # Start Bot Polling Task
     bot_task = asyncio.create_task(bot_runner.start_polling())

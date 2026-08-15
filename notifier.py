@@ -34,7 +34,8 @@ class Notifier:
             if channel_username:
                 post_url = f"https://t.me/{channel_username}/{message_id}"
             else:
-                post_url = f"https://t.me/c/{abs(channel_title)}/{message_id}"
+                clean_id = str(channel_title).replace("-100", "").lstrip("-")
+                post_url = f"https://t.me/c/{clean_id}/{message_id}"
 
         # Clean/truncate message text
         clean_text = message_text.strip()
@@ -42,7 +43,7 @@ class Notifier:
             clean_text = clean_text[:297] + "..."
         safe_text = html.escape(clean_text)
 
-        safe_title = html.escape(channel_title or "Channel")
+        safe_title = html.escape(str(channel_title) if channel_title else "Channel")
         safe_keyword = html.escape(matched_keyword)
 
         formatted_msg = (

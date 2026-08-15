@@ -22,82 +22,95 @@ class MessageProcessor:
 
     def contains_word(self, text: str, keyword: str) -> bool:
         """
-        Check if text contains keyword using regex word boundary or substring match.
+        Check if text contains keyword using regex word boundaries.
+        Supports phrases (e.g., 'canva pro') and single words ('wtb').
         Case-insensitive.
         """
-        pattern = r"\b" + re.escape(keyword) + r"\b"
-        return bool(re.search(pattern, text, re.IGNORECASE))
+        kw = keyword.strip()
+        if not kw:
+            return False
+        # If keyword consists of normal word characters/spaces, use \b word boundary
+        if re.match(r"^[\w\s]+$", kw, re.UNICODE):
+            pattern = r"\b" + re.escape(kw) + r"\b"
+            return bool(re.search(pattern, text, re.IGNORECASE))
+        else:
+            # Substring match for keywords with special symbols (e.g. #wtb)
+            return kw.lower() in text.lower()
 
     def check_match(self, text: str, include_set: Set[str], exclude_set: Set[str]) -> Optional[str]:
         """
         Returns the matched include keyword if message is a valid WTB request,
         or None if message doesn't match or contains an exclude keyword.
         """
-        text_lower = text.lower()
-
-        # First check exclusions: if ANY exclude keyword matches, reject message
+        # 1. First check exclusions: if ANY exclude keyword matches, reject message
         for exc in exclude_set:
-            if self.contains_word(text_lower, exc) or exc in text_lower:
+            if exc and self.contains_word(text, exc):
                 return None
 
-        # Next check include keywords
+        # 2. Next check include keywords
         for inc in include_set:
-            if self.contains_word(text_lower, inc) or inc in text_lower:
+            if inc and self.contains_word(text, inc):
                 return inc
 
         return None
 
     async def process_message(self, message: Message):
         """Main handler for Pyrogram incoming messages from channels."""
-        if not message.text and not message.caption:
-            return
+        try:
+            if not message.text and not message.caption:
+                return
 
-        text = message.text or message.caption or ""
-        chat = message.chat
-        chat_id = chat.id
-        msg_id = message.id
+            text = message.text or message.caption or ""
+            chat = message.chat
+            if not chat:
+                return
 
-        # 1. Anti-duplicate Cooldown Check
-        if self.cooldown.is_on_cooldown(chat_id, msg_id):
-            return
+            chat_id = chat.id
+            msg_id = message.id
 
-        # 2. Hot-Reload Keywords & Excludes
-        include_keywords = self.config.keywords
-        exclude_keywords = self.config.excludes
+            # 1. Anti-duplicate Cooldown Check
+            if self.cooldown.is_on_cooldown(chat_id, msg_id):
+                return
 
-        if not include_keywords:
-            return
+            # 2. Hot-Reload Keywords & Excludes
+            include_keywords = self.config.keywords
+            exclude_keywords = self.config.excludes
 
-        # 3. Check Keyword Match
-        matched_kw = self.check_match(text, include_keywords, exclude_keywords)
-        if not matched_kw:
-            return
+            if not include_keywords:
+                return
 
-        # Mark in cooldown cache
-        self.cooldown.mark(chat_id, msg_id)
+            # 3. Check Keyword Match
+            matched_kw = self.check_match(text, include_keywords, exclude_keywords)
+            if not matched_kw:
+                return
 
-        # 4. Construct Direct Post Link
-        channel_username = chat.username
-        channel_title = chat.title or str(chat_id)
-        post_url = None
+            # Mark in cooldown cache
+            self.cooldown.mark(chat_id, msg_id)
 
-        if channel_username:
-            post_url = f"https://t.me/{channel_username}/{msg_id}"
-        else:
-            # For private channels (ID format -1001234567890 -> 1234567890)
-            raw_id = str(chat_id)
-            if raw_id.startswith("-100"):
-                clean_id = raw_id[4:]
-                post_url = f"https://t.me/c/{clean_id}/{msg_id}"
+            # 4. Construct Direct Post Link
+            channel_username = chat.username
+            channel_title = chat.title or str(chat_id)
+            post_url = None
 
-        logger.info(f"MATCH FOUND in {channel_title} (kw: '{matched_kw}'): {text[:50]}...")
+            if channel_username:
+                post_url = f"https://t.me/{channel_username}/{msg_id}"
+            else:
+                # For private channels (ID format -1001234567890 -> 1234567890)
+                raw_id = str(chat_id)
+                if raw_id.startswith("-100"):
+                    clean_id = raw_id[4:]
+                    post_url = f"https://t.me/c/{clean_id}/{msg_id}"
 
-        # 5. Send Notification
-        await self.notifier.send_match_notification(
-            channel_title=channel_title,
-            channel_username=channel_username,
-            message_text=text,
-            message_id=msg_id,
-            matched_keyword=matched_kw,
-            post_url=post_url
-        )
+            logger.info(f"MATCH FOUND in {channel_title} (kw: '{matched_kw}'): {text[:50]}...")
+
+            # 5. Send Notification
+            await self.notifier.send_match_notification(
+                channel_title=channel_title,
+                channel_username=channel_username,
+                message_text=text,
+                message_id=msg_id,
+                matched_keyword=matched_kw,
+                post_url=post_url
+            )
+        except Exception as e:
+            logger.error(f"Error processing channel message: {e}")
