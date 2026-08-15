@@ -40,7 +40,7 @@ class BotRunner:
                 [{"text": "➖ Hapus Channel"}, {"text": "➖ Hapus Keyword"}],
                 [{"text": "🚫 Exclude Filter"}, {"text": "➕ Exclude"}, {"text": "➖ Exclude"}],
                 [{"text": "📊 Status Bot"}, radar_btn],
-                [{"text": "❓ Help & Petunjuk"}]
+                [{"text": "🔔 Test Notif"}, {"text": "❓ Help & Petunjuk"}]
             ],
             "resize_keyboard": True,
             "is_persistent": True
@@ -117,6 +117,24 @@ class BotRunner:
                 return
 
             # ─── Navigation Button Mappings ───────────────────────────────────────
+
+            # ─── Test Notification Button ─────────────────────────────────────────
+
+            if text in ["🔔 Test Notif", "/test", "test notif"]:
+                await self.send_reply(
+                    "🔔 <b>TEST NOTIFIKASI</b>\n\n"
+                    "✅ Jika kamu bisa baca pesan ini, artinya sistem notifikasi bot <b>BERFUNGSI NORMAL</b>!\n\n"
+                    f"📡 Channels dimonitor: <b>{len(self.config.monitored_channels)}</b>\n"
+                    f"🔑 Keywords aktif: <b>{len(self.config.keywords)}</b>\n"
+                    f"🔴 Radar aktif: <b>{'YA ✅' if self.radar_active else 'TIDAK (PAUSE) ❌'}</b>\n\n"
+                    "💡 <i>Jika notif WTB belum muncul, coba:</i>\n"
+                    "1. Pastikan radar status <b>▶️ AKTIF</b>\n"
+                    "2. Pastikan channel yang benar sudah ditambahkan\n"
+                    "3. Pastikan keyword sesuai dengan isi pesan di channel\n"
+                    "4. Cek log Termux — muncul 🔍 di log artinya pesan masuk!",
+                    msg_id
+                )
+                return
 
             # ─── Start / Stop Radar Toggle ────────────────────────────────────────
 

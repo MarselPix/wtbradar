@@ -22,32 +22,41 @@ class MessageProcessor:
 
     def contains_word(self, text: str, keyword: str) -> bool:
         """
-        Check if text contains keyword using regex word boundaries.
-        Supports phrases (e.g., 'canva pro') and single words ('wtb').
-        Case-insensitive.
+        Checks if text contains keyword.
+        - Case-insensitive always.
+        - For keywords with only word chars & spaces: uses \\b word boundary regex.
+        - For short 2-char keywords or special chars: uses substring match for reliability.
         """
         kw = keyword.strip()
         if not kw:
             return False
-        # If keyword consists of normal word characters/spaces, use \b word boundary
-        if re.match(r"^[\w\s]+$", kw, re.UNICODE):
-            pattern = r"\b" + re.escape(kw) + r"\b"
-            return bool(re.search(pattern, text, re.IGNORECASE))
-        else:
-            # Substring match for keywords with special symbols (e.g. #wtb)
-            return kw.lower() in text.lower()
+
+        text_lower = text.lower()
+        kw_lower = kw.lower()
+
+        # For very short keywords (1-2 chars) or keywords with special symbols,
+        # use simple substring match wrapped in word boundaries where possible
+        if len(kw) <= 2 or not re.match(r"^[\w\s]+$", kw, re.UNICODE):
+            return kw_lower in text_lower
+
+        # For normal multi-char keywords, use regex word boundary for precision
+        try:
+            pattern = r"(?<![a-zA-Z0-9])" + re.escape(kw_lower) + r"(?![a-zA-Z0-9])"
+            return bool(re.search(pattern, text_lower, re.IGNORECASE))
+        except re.error:
+            return kw_lower in text_lower
 
     def check_match(self, text: str, include_set: Set[str], exclude_set: Set[str]) -> Optional[str]:
         """
-        Returns the matched include keyword if message is a valid WTB request,
-        or None if message doesn't match or contains an exclude keyword.
+        Returns matched include keyword if message passes all filters, else None.
         """
-        # 1. First check exclusions: if ANY exclude keyword matches, reject message
+        # 1. Check excludes first — if ANY exclude keyword found, discard message
         for exc in exclude_set:
             if exc and self.contains_word(text, exc):
+                logger.debug(f"Message excluded by keyword: '{exc}'")
                 return None
 
-        # 2. Next check include keywords
+        # 2. Check include keywords
         for inc in include_set:
             if inc and self.contains_word(text, inc):
                 return inc
@@ -58,6 +67,7 @@ class MessageProcessor:
         """Main handler for Pyrogram incoming messages from channels."""
         try:
             if not message.text and not message.caption:
+                logger.debug("Skipped: message has no text/caption")
                 return
 
             text = message.text or message.caption or ""
@@ -67,9 +77,13 @@ class MessageProcessor:
 
             chat_id = chat.id
             msg_id = message.id
+            channel_title = chat.title or str(chat_id)
+
+            logger.info(f"🔍 Checking message from '{channel_title}': {text[:80]!r}")
 
             # 1. Anti-duplicate Cooldown Check
             if self.cooldown.is_on_cooldown(chat_id, msg_id):
+                logger.debug(f"Skipped: cooldown active for msg {msg_id}")
                 return
 
             # 2. Hot-Reload Keywords & Excludes
@@ -77,11 +91,13 @@ class MessageProcessor:
             exclude_keywords = self.config.excludes
 
             if not include_keywords:
+                logger.debug("Skipped: no active keywords configured")
                 return
 
             # 3. Check Keyword Match
             matched_kw = self.check_match(text, include_keywords, exclude_keywords)
             if not matched_kw:
+                logger.debug(f"No keyword match for: {text[:60]!r}")
                 return
 
             # Mark in cooldown cache
@@ -89,19 +105,17 @@ class MessageProcessor:
 
             # 4. Construct Direct Post Link
             channel_username = chat.username
-            channel_title = chat.title or str(chat_id)
             post_url = None
 
             if channel_username:
                 post_url = f"https://t.me/{channel_username}/{msg_id}"
             else:
-                # For private channels (ID format -1001234567890 -> 1234567890)
                 raw_id = str(chat_id)
                 if raw_id.startswith("-100"):
                     clean_id = raw_id[4:]
                     post_url = f"https://t.me/c/{clean_id}/{msg_id}"
 
-            logger.info(f"MATCH FOUND in {channel_title} (kw: '{matched_kw}'): {text[:50]}...")
+            logger.info(f"✅ MATCH! Channel: '{channel_title}' | Keyword: '{matched_kw}' | Text: {text[:60]!r}")
 
             # 5. Send Notification
             await self.notifier.send_match_notification(
@@ -113,4 +127,4 @@ class MessageProcessor:
                 post_url=post_url
             )
         except Exception as e:
-            logger.error(f"Error processing channel message: {e}")
+            logger.error(f"Error processing channel message: {e}", exc_info=True)

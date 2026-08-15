@@ -40,12 +40,14 @@ async def warm_up_peer_cache(app: Client, config: Config):
     """
     Loads initial user dialogs and pre-resolves all monitored channels
     so Pyrogram populates its local session peer DB.
+    Also attempts to join channels so the user account receives MTProto updates.
     Prevents 'ValueError: Peer id invalid'.
     """
-    logger.info("Warming up channel peer cache...")
+    logger.info("Warming up channel peer cache & joining channels...")
     try:
-        async for _ in app.get_dialogs(limit=50):
+        async for _ in app.get_dialogs(limit=100):
             pass
+        logger.info("Dialogs loaded successfully.")
     except Exception as e:
         logger.debug(f"Dialog warm-up: {e}")
 
@@ -53,7 +55,13 @@ async def warm_up_peer_cache(app: Client, config: Config):
     for target in monitored:
         try:
             chat = await app.get_chat(target)
-            logger.info(f"Resolved peer cache for: {chat.title} ({target})")
+            logger.info(f"Resolved peer: {chat.title} ({target})")
+            # Ensure the user account is subscribed to receive channel updates
+            try:
+                await app.join_chat(target)
+                logger.info(f"Joined channel: {chat.title}")
+            except Exception:
+                pass  # Already a member or channel doesn't allow joining — ok
         except Exception as e:
             logger.warning(f"Could not pre-resolve channel {target}: {e}")
 
@@ -77,18 +85,19 @@ async def main():
         workdir="."
     )
 
-    # Initialize Management Bot Runner — pass radar_active flag reference
+    # Initialize Management Bot Runner
     bot_runner = BotRunner(config=config, pyrogram_client=app)
 
-    # ─── Dynamic Message Handler ──────────────────────────────────────────────
-    # NOTE: Instead of a static filter registered at startup (which won't update
-    # when user adds new channels), we use a UNIVERSAL handler that checks the
-    # channel list dynamically inside process_message. This ensures hot-reloading.
+    # ─── Universal Message Handler (Dynamic Hot-Reload) ───────────────────────
+    # Uses filters.channel to catch ALL channel messages.
+    # Channel membership check is done dynamically on every message,
+    # so newly-added channels are picked up WITHOUT restart.
 
     @app.on_message(filters.channel)
     async def channel_message_handler(client: Client, message: Message):
-        """Catches ALL channel messages, then filters dynamically."""
-        # Respect radar active/pause state controlled via Start/Stop buttons
+        """Catches ALL channel messages, then dynamically filters by monitored list."""
+
+        # Respect Start/Stop toggle
         if not bot_runner.radar_active:
             return
 
@@ -97,25 +106,34 @@ async def main():
 
         chat = message.chat
         chat_id = chat.id
-        chat_username = f"@{chat.username}".lower() if chat.username else None
+        chat_username = chat.username.lower() if chat.username else None
 
-        # Dynamically check monitored channels on every message (hot-reload)
+        # Dynamically load monitored channels from config (hot-reload)
         monitored = config.monitored_channels
-        matched = False
-        for target in monitored:
-            target_str = str(target).strip()
-            # Match numeric ID
-            if target_str == str(chat_id):
-                matched = True
-                break
-            # Match @username (case-insensitive)
-            if chat_username and target_str.lstrip("@").lower() == chat_username.lstrip("@").lower():
-                matched = True
-                break
-
-        if not matched:
+        if not monitored:
             return
 
+        matched_channel = False
+        for target in monitored:
+            target_str = str(target).strip()
+
+            # Match numeric ID (e.g. -1001525948158 == -1001525948158)
+            if target_str == str(chat_id):
+                matched_channel = True
+                break
+
+            # Match @username case-insensitively
+            target_bare = target_str.lstrip("@").lower()
+            if chat_username and target_bare == chat_username:
+                matched_channel = True
+                break
+
+        if not matched_channel:
+            # Verbose debug log — visible in Termux
+            logger.debug(f"Ignored message from non-monitored channel: {chat.title} ({chat_id})")
+            return
+
+        logger.info(f"📨 Message received from monitored channel: {chat.title} ({chat_id})")
         await processor.process_message(message)
 
     logger.info("Starting Pyrogram client...")
@@ -123,19 +141,19 @@ async def main():
     me = await app.get_me()
     logger.info(f"Pyrogram logged in as User: {me.first_name} (@{me.username or me.id})")
 
-    # Warm up peer cache to fix ValueError: Peer id invalid
+    # Warm up peer cache & join all channels
     await warm_up_peer_cache(app, config)
 
     # Start Bot Polling Task
     bot_task = asyncio.create_task(bot_runner.start_polling())
 
-    # Send Startup Notification with Navigation Keyboard
+    # Send Startup Notification
     startup_msg = (
         "🚀 <b>WTB RADAR AKTIF &amp; MONITORING!</b>\n\n"
         f"👤 <b>User Account:</b> {me.first_name} (@{me.username or me.id})\n"
         f"📡 <b>Monitored Channels:</b> {len(config.monitored_channels)}\n"
         f"🔑 <b>Active Keywords:</b> {len(config.keywords)}\n\n"
-        "Gunakan <b>tombol navigasi di bawah</b> untuk mengontrol bot secara langsung."
+        "Gunakan <b>tombol navigasi di bawah</b> untuk mengontrol bot."
     )
     await notifier.send_system_message(startup_msg, reply_markup=bot_runner.get_main_keyboard())
 
@@ -153,7 +171,7 @@ async def main():
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
-            pass  # Windows implementation fallback
+            pass  # Windows fallback
 
     try:
         await stop_event.wait()
