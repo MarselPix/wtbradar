@@ -7,6 +7,7 @@ Uses lightweight asyncio HTTP polling with httpx (no external bot framework need
 import asyncio
 import html
 import logging
+import re
 import httpx
 from typing import Optional
 from pyrogram import Client
@@ -74,19 +75,25 @@ class BotRunner:
 
     async def handle_update(self, update: dict):
         """Process incoming Telegram update from user."""
-        message = update.get("message")
-        if not message:
+        try:
+            message = update.get("message")
+            if not message:
+                return
+
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id != self.target_chat_id:
+                logger.warning(f"Unauthorized command attempt from chat ID {chat_id}")
+                return
+
+            text = message.get("text", "").strip()
+            msg_id = message.get("message_id")
+            if not text:
+                return
+        except Exception as e:
+            logger.error(f"Error reading update: {e}")
             return
 
-        chat_id = message.get("chat", {}).get("id")
-        if chat_id != self.target_chat_id:
-            logger.warning(f"Unauthorized command attempt from chat ID {chat_id}")
-            return
-
-        text = message.get("text", "").strip()
-        msg_id = message.get("message_id")
-        if not text:
-            return
+        try:
 
         # ─── Global Cancel Button Listener ────────────────────────────────────
 
@@ -277,6 +284,9 @@ class BotRunner:
             "💡 Gunakan tombol navigasi di bawah untuk mengontrol bot, atau klik <b>❓ Help & Petunjuk</b>.",
             msg_id
         )
+        except Exception as e:
+            logger.error(f"Error handling bot update command: {e}")
+            await self.send_reply(f"⚠️ Terjadi kesalahan saat memproses perintah: <code>{html.escape(str(e))}</code>", msg_id)
 
     # ─── Command Implementation ───────────────────────────────────────────────
 

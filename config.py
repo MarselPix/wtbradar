@@ -6,8 +6,9 @@ keywords.txt / exclude.txt fresh on every access (hot-reload).
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import List, Set
+from typing import List, Set, Tuple
 
 logger = logging.getLogger("WTBRadar.config")
 
