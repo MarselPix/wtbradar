@@ -8,6 +8,13 @@ import asyncio
 import logging
 import signal
 import sys
+
+# Ensure event loop exists before importing Pyrogram (fix for Python 3.12+ / 3.14)
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
