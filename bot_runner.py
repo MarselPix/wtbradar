@@ -27,16 +27,20 @@ class BotRunner:
         self._offset = 0
         self.is_running = False
         self.pending_state: Optional[str] = None
+        # Controls whether the radar actively monitors channels (Start/Stop toggle)
+        self.radar_active: bool = True
 
     def get_main_keyboard(self) -> dict:
         """Mobile-friendly grid navigation keyboard."""
+        radar_btn = {"text": "⏹ Stop Radar"} if self.radar_active else {"text": "▶️ Start Radar"}
         return {
             "keyboard": [
                 [{"text": "📡 Channel Monitor"}, {"text": "🔑 WTB Keywords"}],
                 [{"text": "➕ Tambah Channel"}, {"text": "➕ Tambah Keyword"}],
                 [{"text": "➖ Hapus Channel"}, {"text": "➖ Hapus Keyword"}],
                 [{"text": "🚫 Exclude Filter"}, {"text": "➕ Exclude"}, {"text": "➖ Exclude"}],
-                [{"text": "📊 Status Bot"}, {"text": "❓ Help & Petunjuk"}]
+                [{"text": "📊 Status Bot"}, radar_btn],
+                [{"text": "❓ Help & Petunjuk"}]
             ],
             "resize_keyboard": True,
             "is_persistent": True
@@ -113,6 +117,44 @@ class BotRunner:
                 return
 
             # ─── Navigation Button Mappings ───────────────────────────────────────
+
+            # ─── Start / Stop Radar Toggle ────────────────────────────────────────
+
+            if text in ["▶️ Start Radar", "/start_radar", "start radar"]:
+                if self.radar_active:
+                    await self.send_reply(
+                        "ℹ️ <b>Radar sudah dalam keadaan AKTIF!</b>\n\nGunakan tombol <b>⏹ Stop Radar</b> untuk menghentikan.",
+                        msg_id
+                    )
+                else:
+                    self.radar_active = True
+                    await self.send_reply(
+                        "▶️ <b>RADAR DINYALAKAN!</b>\n\n"
+                        "🟢 WTB Radar sekarang <b>AKTIF & MONITORING</b> semua channel!\n\n"
+                        f"📡 Channel: {len(self.config.monitored_channels)}\n"
+                        f"🔑 Keywords: {len(self.config.keywords)}",
+                        msg_id,
+                        custom_keyboard=self.get_main_keyboard()
+                    )
+                return
+
+            if text in ["⏹ Stop Radar", "/stop_radar", "stop radar"]:
+                if not self.radar_active:
+                    await self.send_reply(
+                        "ℹ️ <b>Radar sudah dalam keadaan BERHENTI!</b>\n\nGunakan tombol <b>▶️ Start Radar</b> untuk mengaktifkan.",
+                        msg_id
+                    )
+                else:
+                    self.radar_active = False
+                    await self.send_reply(
+                        "⏹ <b>RADAR DIHENTIKAN!</b>\n\n"
+                        "🔴 WTB Radar sekarang <b>PAUSE / TIDAK AKTIF</b>.\n\n"
+                        "Bot management tetap bisa dipakai, tapi notifikasi WTB tidak akan dikirim.\n"
+                        "Klik <b>▶️ Start Radar</b> untuk mengaktifkan kembali.",
+                        msg_id,
+                        custom_keyboard=self.get_main_keyboard()
+                    )
+                return
 
             if text in ["📡 Channel Monitor", "📡 List Channel"]:
                 self.pending_state = None
@@ -303,8 +345,13 @@ class BotRunner:
         kws = self.config.keywords
         exs = self.config.excludes
 
+        if self.radar_active:
+            radar_line = "🟢 <b>WTB RADAR STATUS: AKTIF / RUNNING</b>"
+        else:
+            radar_line = "🔴 <b>WTB RADAR STATUS: PAUSE / BERHENTI</b>"
+
         status_text = (
-            "🟢 <b>WTB RADAR STATUS: RUNNING</b>\n"
+            f"{radar_line}\n"
             "───────────────────────────\n"
             f"📡 <b>Monitored Channels:</b> {len(channels)}\n"
             f"🔑 <b>WTB Keywords:</b> {len(kws)}\n"

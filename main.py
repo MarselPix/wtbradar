@@ -35,35 +35,6 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WTBRadar.main")
 
-# ─── Dynamic Channel Filter ───────────────────────────────────────────────────
-
-def is_monitored_channel(config: Config):
-    """Custom Pyrogram filter that dynamically checks if incoming message belongs to monitored channels."""
-    async def func(_, __, message: Message):
-        if not message.chat:
-            return False
-
-        monitored = config.monitored_channels
-        if not monitored:
-            return False
-
-        chat = message.chat
-        chat_id = chat.id
-        chat_username = f"@{chat.username}" if chat.username else None
-
-        for target in monitored:
-            target_str = str(target).strip()
-            # Match numeric ID
-            if target_str == str(chat_id):
-                return True
-            # Match username (with or without @)
-            if chat_username and target_str.lstrip("@").lower() == chat_username.lstrip("@").lower():
-                return True
-
-        return False
-
-    return filters.create(func, "DynamicMonitoredChannelFilter")
-
 
 async def warm_up_peer_cache(app: Client, config: Config):
     """
@@ -73,7 +44,7 @@ async def warm_up_peer_cache(app: Client, config: Config):
     """
     logger.info("Warming up channel peer cache...")
     try:
-        async for _ in app.get_dialogs(limit=30):
+        async for _ in app.get_dialogs(limit=50):
             pass
     except Exception as e:
         logger.debug(f"Dialog warm-up: {e}")
@@ -106,13 +77,46 @@ async def main():
         workdir="."
     )
 
-    # Register message handler for channel updates
-    @app.on_message(is_monitored_channel(config))
-    async def channel_message_handler(client: Client, message: Message):
-        await processor.process_message(message)
-
-    # Initialize Management Bot Runner
+    # Initialize Management Bot Runner — pass radar_active flag reference
     bot_runner = BotRunner(config=config, pyrogram_client=app)
+
+    # ─── Dynamic Message Handler ──────────────────────────────────────────────
+    # NOTE: Instead of a static filter registered at startup (which won't update
+    # when user adds new channels), we use a UNIVERSAL handler that checks the
+    # channel list dynamically inside process_message. This ensures hot-reloading.
+
+    @app.on_message(filters.channel)
+    async def channel_message_handler(client: Client, message: Message):
+        """Catches ALL channel messages, then filters dynamically."""
+        # Respect radar active/pause state controlled via Start/Stop buttons
+        if not bot_runner.radar_active:
+            return
+
+        if not message.chat:
+            return
+
+        chat = message.chat
+        chat_id = chat.id
+        chat_username = f"@{chat.username}".lower() if chat.username else None
+
+        # Dynamically check monitored channels on every message (hot-reload)
+        monitored = config.monitored_channels
+        matched = False
+        for target in monitored:
+            target_str = str(target).strip()
+            # Match numeric ID
+            if target_str == str(chat_id):
+                matched = True
+                break
+            # Match @username (case-insensitive)
+            if chat_username and target_str.lstrip("@").lower() == chat_username.lstrip("@").lower():
+                matched = True
+                break
+
+        if not matched:
+            return
+
+        await processor.process_message(message)
 
     logger.info("Starting Pyrogram client...")
     await app.start()
@@ -127,7 +131,7 @@ async def main():
 
     # Send Startup Notification with Navigation Keyboard
     startup_msg = (
-        "🚀 <b>WTB RADAR AKTIF & MONITORING!</b>\n\n"
+        "🚀 <b>WTB RADAR AKTIF &amp; MONITORING!</b>\n\n"
         f"👤 <b>User Account:</b> {me.first_name} (@{me.username or me.id})\n"
         f"📡 <b>Monitored Channels:</b> {len(config.monitored_channels)}\n"
         f"🔑 <b>Active Keywords:</b> {len(config.keywords)}\n\n"
