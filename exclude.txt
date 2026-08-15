@@ -3,22 +3,3 @@
 # Pesan yang mengandung keyword ini akan diabaikan
 # Hot-reload: perubahan langsung aktif tanpa restart
 # ============================================
-
-wts
-jual
-dijual
-numpang
-close
-closed
-sold
-terjual
-available
-ready
-stok
-stock
-dp
-down payment
-open
-open reseller
-restock
-garansi toko

@@ -3,19 +3,3 @@
 # Baris yang diawali # adalah komentar
 # Hot-reload: perubahan langsung aktif tanpa restart
 # ============================================
-
-wtb
-want to buy
-butuh
-cari
-nyari
-mau beli
-dicari
-cr
-looking for
-beli
-nanya
-nanyain
-minta
-request
-need

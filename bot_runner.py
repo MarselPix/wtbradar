@@ -27,28 +27,51 @@ class BotRunner:
         self.is_running = False
         self.pending_state: Optional[str] = None
 
+class BotRunner:
+    def __init__(self, config: Config, pyrogram_client: Client):
+        self.config = config
+        self.app = pyrogram_client
+        self.bot_token = config.bot_token
+        self.target_chat_id = config.target_chat_id
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+        self._offset = 0
+        self.is_running = False
+        self.pending_state: Optional[str] = None
+
     def get_main_keyboard(self) -> dict:
-        """Returns custom persistent ReplyKeyboardMarkup for chat navigation."""
+        """Mobile-friendly grid navigation keyboard."""
         return {
             "keyboard": [
-                [{"text": "📡 List Channel"}, {"text": "➕ Tambah Channel"}, {"text": "➖ Hapus Channel"}],
-                [{"text": "🔑 WTB Keywords"}, {"text": "➕ Tambah Keyword"}, {"text": "➖ Hapus Keyword"}],
-                [{"text": "🚫 Exclude Filter"}, {"text": "➕ Tambah Exclude"}, {"text": "➖ Hapus Exclude"}],
-                [{"text": "📊 Status Bot"}, {"text": "❓ Help / Menu"}]
+                [{"text": "📡 Channel Monitor"}, {"text": "🔑 WTB Keywords"}],
+                [{"text": "➕ Tambah Channel"}, {"text": "➕ Tambah Keyword"}],
+                [{"text": "➖ Hapus Channel"}, {"text": "➖ Hapus Keyword"}],
+                [{"text": "🚫 Exclude Filter"}, {"text": "➕ Exclude"}, {"text": "➖ Exclude"}],
+                [{"text": "📊 Status Bot"}, {"text": "❓ Help & Petunjuk"}]
             ],
             "resize_keyboard": True,
             "is_persistent": True
         }
 
-    async def send_reply(self, text: str, reply_to_message_id: Optional[int] = None, show_keyboard: bool = True):
-        """Helper to send a message back to the target user with reply markup."""
+    def get_cancel_keyboard(self) -> dict:
+        """Cancel keyboard presented during input states."""
+        return {
+            "keyboard": [
+                [{"text": "❌ Batal / Kembali ke Menu"}]
+            ],
+            "resize_keyboard": True
+        }
+
+    async def send_reply(self, text: str, reply_to_message_id: Optional[int] = None, custom_keyboard: Optional[dict] = None):
+        """Helper to send a message back to the target user with specified reply markup."""
         payload = {
             "chat_id": self.target_chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
-        if show_keyboard:
+        if custom_keyboard is not None:
+            payload["reply_markup"] = custom_keyboard
+        else:
             payload["reply_markup"] = self.get_main_keyboard()
 
         if reply_to_message_id:
@@ -76,9 +99,19 @@ class BotRunner:
         if not text:
             return
 
+        # ─── Global Cancel Button Listener ────────────────────────────────────
+
+        if text in ["❌ Batal / Kembali ke Menu", "❌ Batal", "Batal", "batal"]:
+            self.pending_state = None
+            await self.send_reply(
+                "❌ <b>Operasi Dibatalkan</b>\n\nKembali ke menu utama control panel.",
+                msg_id
+            )
+            return
+
         # ─── Navigation Button Mappings ───────────────────────────────────────
 
-        if text == "📡 List Channel":
+        if text in ["📡 Channel Monitor", "📡 List Channel"]:
             self.pending_state = None
             await self.cmd_list_channels(msg_id)
             return
@@ -86,20 +119,26 @@ class BotRunner:
         elif text == "➕ Tambah Channel":
             self.pending_state = "awaiting_add_channel"
             await self.send_reply(
-                "📥 <b>TAMBAH CHANNEL</b>\n\n"
-                "Silakan kirimkan username channel / link invite / chat ID:\n"
-                "<i>Contoh: @channelwtb atau https://t.me/+invite_link</i>",
-                msg_id
+                "📥 <b>TAMBAH CHANNEL MONITOR</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan username channel / link invite / chat ID:\n\n"
+                "• <i>Contoh Publik:</i> <code>@channelwtb</code>\n"
+                "• <i>Contoh Link:</i> <code>https://t.me/+invite_link</code>\n\n"
+                "Tekan <b>❌ Batal / Kembali ke Menu</b> jika ingin membatalkan.",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
         elif text == "➖ Hapus Channel":
             self.pending_state = "awaiting_del_channel"
             await self.send_reply(
-                "📤 <b>HAPUS CHANNEL</b>\n\n"
-                "Silakan kirimkan username atau chat ID channel yang mau dihapus:\n"
-                "<i>Contoh: @channelwtb</i>",
-                msg_id
+                "📤 <b>HAPUS CHANNEL MONITOR</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan username atau ID channel yang ingin dihapus:\n\n"
+                "• <i>Contoh:</i> <code>@channelwtb</code>",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
@@ -111,45 +150,53 @@ class BotRunner:
         elif text == "➕ Tambah Keyword":
             self.pending_state = "awaiting_add_kw"
             await self.send_reply(
-                "➕ <b>TAMBAH KEYWORD WTB</b>\n\n"
-                "Silakan kirimkan kata kunci WTB baru yang ingin dicari:\n"
-                "<i>Contoh: canva pro</i>",
-                msg_id
+                "➕ <b>TAMBAH KEYWORD WTB</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan kata kunci WTB baru yang ingin dicari:\n\n"
+                "• <i>Contoh:</i> <code>canva pro</code> atau <code>capcut</code>",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
         elif text == "➖ Hapus Keyword":
             self.pending_state = "awaiting_del_kw"
             await self.send_reply(
-                "➖ <b>HAPUS KEYWORD WTB</b>\n\n"
-                "Silakan kirimkan kata kunci WTB yang ingin dihapus:\n"
-                "<i>Contoh: canva</i>",
-                msg_id
+                "➖ <b>HAPUS KEYWORD WTB</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan kata kunci WTB yang ingin dihapus:\n\n"
+                "• <i>Contoh:</i> <code>canva pro</code>",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
-        elif text == "🚫 Exclude Filter":
+        elif text in ["🚫 Exclude Filter", "🚫 Exclude"]:
             self.pending_state = None
             await self.cmd_list_excludes(msg_id)
             return
 
-        elif text == "➕ Tambah Exclude":
+        elif text == "➕ Exclude":
             self.pending_state = "awaiting_add_ex"
             await self.send_reply(
-                "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n\n"
-                "Silakan kirimkan kata filter yang ingin DIABAIKAN (misal WTS):\n"
-                "<i>Contoh: wts</i>",
-                msg_id
+                "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan kata filter yang ingin DIABAIKAN:\n\n"
+                "• <i>Contoh:</i> <code>wts</code> atau <code>jual</code>",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
-        elif text == "➖ Hapus Exclude":
+        elif text == "➖ Exclude":
             self.pending_state = "awaiting_del_ex"
             await self.send_reply(
-                "🗑️ <b>HAPUS EXCLUDE FILTER</b>\n\n"
-                "Silakan kirimkan kata filter yang ingin dihapus dari abaikan:\n"
-                "<i>Contoh: wts</i>",
-                msg_id
+                "🗑️ <b>HAPUS EXCLUDE FILTER</b>\n"
+                "───────────────────────────\n"
+                "Silakan kirimkan kata filter yang ingin dihapus dari abaikan:\n\n"
+                "• <i>Contoh:</i> <code>wts</code>",
+                msg_id,
+                custom_keyboard=self.get_cancel_keyboard()
             )
             return
 
@@ -158,7 +205,7 @@ class BotRunner:
             await self.cmd_status(msg_id)
             return
 
-        elif text in ["❓ Help / Menu", "❓ Help", "/start", "/help"]:
+        elif text in ["❓ Help & Petunjuk", "❓ Help", "/start", "/help"]:
             self.pending_state = None
             await self.cmd_help(msg_id)
             return
@@ -219,7 +266,7 @@ class BotRunner:
 
         # Unrecognized input with no pending state
         await self.send_reply(
-            "💡 Gunakan tombol navigasi di bawah untuk mengontrol bot, atau ketik <code>/help</code>.",
+            "💡 Gunakan tombol navigasi di bawah untuk mengontrol bot, atau klik <b>❓ Help & Petunjuk</b>.",
             msg_id
         )
 
