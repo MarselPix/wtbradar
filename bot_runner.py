@@ -89,201 +89,196 @@ class BotRunner:
             msg_id = message.get("message_id")
             if not text:
                 return
-        except Exception as e:
-            logger.error(f"Error reading update: {e}")
-            return
 
-        try:
+            # ─── Global Cancel Button Listener ────────────────────────────────────
 
-        # ─── Global Cancel Button Listener ────────────────────────────────────
+            if text in ["❌ Batal / Kembali ke Menu", "❌ Batal", "Batal", "batal"]:
+                self.pending_state = None
+                await self.send_reply(
+                    "❌ <b>Operasi Dibatalkan</b>\n\nKembali ke menu utama control panel.",
+                    msg_id
+                )
+                return
 
-        if text in ["❌ Batal / Kembali ke Menu", "❌ Batal", "Batal", "batal"]:
-            self.pending_state = None
+            # ─── Clear All Commands ───────────────────────────────────────────────
+
+            if text.lower() in ["/clearkw", "/resetkw", "reset keyword"]:
+                self.config.clear_keywords()
+                await self.send_reply("🗑️ <b>Semua Keyword WTB berhasil dikosongkan/direset!</b>", msg_id)
+                return
+
+            if text.lower() in ["/clearex", "/resetex", "reset exclude"]:
+                self.config.clear_excludes()
+                await self.send_reply("🗑️ <b>Semua Exclude Filter berhasil dikosongkan/direset!</b>", msg_id)
+                return
+
+            # ─── Navigation Button Mappings ───────────────────────────────────────
+
+            if text in ["📡 Channel Monitor", "📡 List Channel"]:
+                self.pending_state = None
+                await self.cmd_list_channels(msg_id)
+                return
+
+            elif text == "➕ Tambah Channel":
+                self.pending_state = "awaiting_add_channel"
+                await self.send_reply(
+                    "📥 <b>TAMBAH CHANNEL MONITOR (BISA BULK)</b>\n"
+                    "───────────────────────────\n"
+                    "Silakan kirimkan username / link invite channel (bisa banyak sekaligus dipisah koma atau baris baru):\n\n"
+                    "• <i>Contoh 1:</i> <code>@channelwtb1, @channelwtb2</code>\n"
+                    "• <i>Contoh 2:</i> <code>https://t.me/+invite_link</code>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text == "➖ Hapus Channel":
+                self.pending_state = "awaiting_del_channel"
+                await self.send_reply(
+                    "📤 <b>HAPUS CHANNEL MONITOR (BISA BULK)</b>\n"
+                    "───────────────────────────\n"
+                    "Silakan kirimkan username atau ID channel yang ingin dihapus (bisa dipisah koma):\n\n"
+                    "• <i>Contoh:</i> <code>@channelwtb1, @channelwtb2</code>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text in ["🔑 WTB Keywords", "🔑 Keywords WTB"]:
+                self.pending_state = None
+                await self.cmd_list_keywords(msg_id)
+                return
+
+            elif text == "➕ Tambah Keyword":
+                self.pending_state = "awaiting_add_kw"
+                await self.send_reply(
+                    "➕ <b>TAMBAH KEYWORD WTB (SUPPORT BULK / BANYAK)</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata kunci WTB baru. Bisa langsung banyak sekaligus dipisah <b>koma</b> atau <b>baris baru</b>:\n\n"
+                    "• <i>Contoh:</i> <code>canva, capcut, youtube premium, netflix</code>\n\n"
+                    "💡 <i>Ketik <code>/clearkw</code> untuk mengosongkan semua keyword secara instan.</i>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text == "➖ Hapus Keyword":
+                self.pending_state = "awaiting_del_kw"
+                await self.send_reply(
+                    "➖ <b>HAPUS KEYWORD WTB (SUPPORT BULK)</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata kunci yang ingin dihapus (pisah dengan koma jika lebih dari satu):\n\n"
+                    "• <i>Contoh:</i> <code>canva, capcut</code>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text in ["🚫 Exclude Filter", "🚫 Exclude"]:
+                self.pending_state = None
+                await self.cmd_list_excludes(msg_id)
+                return
+
+            elif text == "➕ Exclude":
+                self.pending_state = "awaiting_add_ex"
+                await self.send_reply(
+                    "🚫 <b>TAMBAH EXCLUDE FILTER (SUPPORT BULK)</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata filter yang ingin DIABAIKAN (bisa dipisah koma):\n\n"
+                    "• <i>Contoh:</i> <code>wts, jual, stok, ready, promo</code>\n\n"
+                    "💡 <i>Ketik <code>/clearex</code> untuk mengosongkan semua filter abaikan.</i>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text == "➖ Exclude":
+                self.pending_state = "awaiting_del_ex"
+                await self.send_reply(
+                    "🗑️ <b>HAPUS EXCLUDE FILTER (SUPPORT BULK)</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata filter yang ingin dihapus (bisa dipisah koma):\n\n"
+                    "• <i>Contoh:</i> <code>wts, jual</code>",
+                    msg_id,
+                    custom_keyboard=self.get_cancel_keyboard()
+                )
+                return
+
+            elif text in ["📊 Status Bot", "📊 Status"]:
+                self.pending_state = None
+                await self.cmd_status(msg_id)
+                return
+
+            elif text in ["❓ Help & Petunjuk", "❓ Help", "/start", "/help"]:
+                self.pending_state = None
+                await self.cmd_help(msg_id)
+                return
+
+            # ─── Stateful Input Handling ─────────────────────────────────────────
+
+            if self.pending_state:
+                state = self.pending_state
+                self.pending_state = None
+
+                if state == "awaiting_add_channel":
+                    await self.cmd_add_channel(text, msg_id)
+                    return
+                elif state == "awaiting_del_channel":
+                    await self.cmd_del_channel(text, msg_id)
+                    return
+                elif state == "awaiting_add_kw":
+                    await self.cmd_add_kw(text, msg_id)
+                    return
+                elif state == "awaiting_del_kw":
+                    await self.cmd_del_kw(text, msg_id)
+                    return
+                elif state == "awaiting_add_ex":
+                    await self.cmd_add_ex(text, msg_id)
+                    return
+                elif state == "awaiting_del_ex":
+                    await self.cmd_del_ex(text, msg_id)
+                    return
+
+            # ─── Slashed Command Router Fallback ──────────────────────────────────
+
+            if text.startswith("/"):
+                parts = text.split(maxsplit=1)
+                command = parts[0].lower().replace("@" + self.bot_token.split(":")[0], "")
+                args = parts[1].strip() if len(parts) > 1 else ""
+
+                if command == "/status":
+                    await self.cmd_status(msg_id)
+                elif command == "/channels":
+                    await self.cmd_list_channels(msg_id)
+                elif command == "/addchannel":
+                    await self.cmd_add_channel(args, msg_id)
+                elif command == "/delchannel":
+                    await self.cmd_del_channel(args, msg_id)
+                elif command == "/keywords":
+                    await self.cmd_list_keywords(msg_id)
+                elif command == "/addkw":
+                    await self.cmd_add_kw(args, msg_id)
+                elif command == "/delkw":
+                    await self.cmd_del_kw(args, msg_id)
+                elif command == "/clearkw":
+                    self.config.clear_keywords()
+                    await self.send_reply("🗑️ Semua keyword WTB berhasil dikosongkan!", msg_id)
+                elif command == "/clearex":
+                    self.config.clear_excludes()
+                    await self.send_reply("🗑️ Semua exclude filter berhasil dikosongkan!", msg_id)
+                elif command == "/excludes":
+                    await self.cmd_list_excludes(msg_id)
+                elif command == "/addex":
+                    await self.cmd_add_ex(args, msg_id)
+                elif command == "/delex":
+                    await self.cmd_del_ex(args, msg_id)
+                return
+
+            # Unrecognized input with no pending state
             await self.send_reply(
-                "❌ <b>Operasi Dibatalkan</b>\n\nKembali ke menu utama control panel.",
+                "💡 Gunakan tombol navigasi di bawah untuk mengontrol bot, atau klik <b>❓ Help & Petunjuk</b>.",
                 msg_id
             )
-            return
-
-        # ─── Clear All Commands ───────────────────────────────────────────────
-
-        if text.lower() in ["/clearkw", "/resetkw", "reset keyword"]:
-            self.config.clear_keywords()
-            await self.send_reply("🗑️ <b>Semua Keyword WTB berhasil dikosongkan/direset!</b>", msg_id)
-            return
-
-        if text.lower() in ["/clearex", "/resetex", "reset exclude"]:
-            self.config.clear_excludes()
-            await self.send_reply("🗑️ <b>Semua Exclude Filter berhasil dikosongkan/direset!</b>", msg_id)
-            return
-
-        # ─── Navigation Button Mappings ───────────────────────────────────────
-
-        if text in ["📡 Channel Monitor", "📡 List Channel"]:
-            self.pending_state = None
-            await self.cmd_list_channels(msg_id)
-            return
-
-        elif text == "➕ Tambah Channel":
-            self.pending_state = "awaiting_add_channel"
-            await self.send_reply(
-                "📥 <b>TAMBAH CHANNEL MONITOR (BISA BULK)</b>\n"
-                "───────────────────────────\n"
-                "Silakan kirimkan username / link invite channel (bisa banyak sekaligus dipisah koma atau baris baru):\n\n"
-                "• <i>Contoh 1:</i> <code>@channelwtb1, @channelwtb2</code>\n"
-                "• <i>Contoh 2:</i> <code>https://t.me/+invite_link</code>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text == "➖ Hapus Channel":
-            self.pending_state = "awaiting_del_channel"
-            await self.send_reply(
-                "📤 <b>HAPUS CHANNEL MONITOR (BISA BULK)</b>\n"
-                "───────────────────────────\n"
-                "Silakan kirimkan username atau ID channel yang ingin dihapus (bisa dipisah koma):\n\n"
-                "• <i>Contoh:</i> <code>@channelwtb1, @channelwtb2</code>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text in ["🔑 WTB Keywords", "🔑 Keywords WTB"]:
-            self.pending_state = None
-            await self.cmd_list_keywords(msg_id)
-            return
-
-        elif text == "➕ Tambah Keyword":
-            self.pending_state = "awaiting_add_kw"
-            await self.send_reply(
-                "➕ <b>TAMBAH KEYWORD WTB (SUPPORT BULK / BANYAK)</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata kunci WTB baru. Bisa langsung banyak sekaligus dipisah <b>koma</b> atau <b>baris baru</b>:\n\n"
-                "• <i>Contoh:</i> <code>canva, capcut, youtube premium, netflix</code>\n\n"
-                "💡 <i>Ketik <code>/clearkw</code> untuk mengosongkan semua keyword secara instan.</i>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text == "➖ Hapus Keyword":
-            self.pending_state = "awaiting_del_kw"
-            await self.send_reply(
-                "➖ <b>HAPUS KEYWORD WTB (SUPPORT BULK)</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata kunci yang ingin dihapus (pisah dengan koma jika lebih dari satu):\n\n"
-                "• <i>Contoh:</i> <code>canva, capcut</code>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text in ["🚫 Exclude Filter", "🚫 Exclude"]:
-            self.pending_state = None
-            await self.cmd_list_excludes(msg_id)
-            return
-
-        elif text == "➕ Exclude":
-            self.pending_state = "awaiting_add_ex"
-            await self.send_reply(
-                "🚫 <b>TAMBAH EXCLUDE FILTER (SUPPORT BULK)</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata filter yang ingin DIABAIKAN (bisa dipisah koma):\n\n"
-                "• <i>Contoh:</i> <code>wts, jual, stok, ready, promo</code>\n\n"
-                "💡 <i>Ketik <code>/clearex</code> untuk mengosongkan semua filter abaikan.</i>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text == "➖ Exclude":
-            self.pending_state = "awaiting_del_ex"
-            await self.send_reply(
-                "🗑️ <b>HAPUS EXCLUDE FILTER (SUPPORT BULK)</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata filter yang ingin dihapus (bisa dipisah koma):\n\n"
-                "• <i>Contoh:</i> <code>wts, jual</code>",
-                msg_id,
-                custom_keyboard=self.get_cancel_keyboard()
-            )
-            return
-
-        elif text in ["📊 Status Bot", "📊 Status"]:
-            self.pending_state = None
-            await self.cmd_status(msg_id)
-            return
-
-        elif text in ["❓ Help & Petunjuk", "❓ Help", "/start", "/help"]:
-            self.pending_state = None
-            await self.cmd_help(msg_id)
-            return
-
-        # ─── Stateful Input Handling ─────────────────────────────────────────
-
-        if self.pending_state:
-            state = self.pending_state
-            self.pending_state = None
-
-            if state == "awaiting_add_channel":
-                await self.cmd_add_channel(text, msg_id)
-                return
-            elif state == "awaiting_del_channel":
-                await self.cmd_del_channel(text, msg_id)
-                return
-            elif state == "awaiting_add_kw":
-                await self.cmd_add_kw(text, msg_id)
-                return
-            elif state == "awaiting_del_kw":
-                await self.cmd_del_kw(text, msg_id)
-                return
-            elif state == "awaiting_add_ex":
-                await self.cmd_add_ex(text, msg_id)
-                return
-            elif state == "awaiting_del_ex":
-                await self.cmd_del_ex(text, msg_id)
-                return
-
-        # ─── Slashed Command Router Fallback ──────────────────────────────────
-
-        if text.startswith("/"):
-            parts = text.split(maxsplit=1)
-            command = parts[0].lower().replace("@" + self.bot_token.split(":")[0], "")
-            args = parts[1].strip() if len(parts) > 1 else ""
-
-            if command == "/status":
-                await self.cmd_status(msg_id)
-            elif command == "/channels":
-                await self.cmd_list_channels(msg_id)
-            elif command == "/addchannel":
-                await self.cmd_add_channel(args, msg_id)
-            elif command == "/delchannel":
-                await self.cmd_del_channel(args, msg_id)
-            elif command == "/keywords":
-                await self.cmd_list_keywords(msg_id)
-            elif command == "/addkw":
-                await self.cmd_add_kw(args, msg_id)
-            elif command == "/delkw":
-                await self.cmd_del_kw(args, msg_id)
-            elif command == "/clearkw":
-                self.config.clear_keywords()
-                await self.send_reply("🗑️ Semua keyword WTB berhasil dikosongkan!", msg_id)
-            elif command == "/clearex":
-                self.config.clear_excludes()
-                await self.send_reply("🗑️ Semua exclude filter berhasil dikosongkan!", msg_id)
-            elif command == "/excludes":
-                await self.cmd_list_excludes(msg_id)
-            elif command == "/addex":
-                await self.cmd_add_ex(args, msg_id)
-            elif command == "/delex":
-                await self.cmd_del_ex(args, msg_id)
-            return
-
-        # Unrecognized input with no pending state
-        await self.send_reply(
-            "💡 Gunakan tombol navigasi di bawah untuk mengontrol bot, atau klik <b>❓ Help & Petunjuk</b>.",
-            msg_id
-        )
         except Exception as e:
             logger.error(f"Error handling bot update command: {e}")
             await self.send_reply(f"⚠️ Terjadi kesalahan saat memproses perintah: <code>{html.escape(str(e))}</code>", msg_id)
