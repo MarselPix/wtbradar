@@ -424,11 +424,28 @@ class BotRunner:
         raw_items = [ch.strip() for ch in re.split(r"[,\n]", args) if ch.strip()]
         results = []
         for ch_raw in raw_items:
+            # Try removing by the raw string first (exact match)
             removed = self.config.remove_channel(ch_raw)
             if removed:
                 results.append(f"✅ <code>{ch_raw}</code> dihapus")
-            else:
-                results.append(f"❌ <code>{ch_raw}</code> tidak ditemukan")
+                continue
+
+            # If not found, resolve via Pyrogram (e.g. @basewtb → -1001525948158)
+            # then try removing by the resolved identifier
+            try:
+                chat = await self.app.get_chat(ch_raw)
+                # Try by numeric ID
+                removed = self.config.remove_channel(str(chat.id))
+                if not removed and chat.username:
+                    # Try by @username
+                    removed = self.config.remove_channel(f"@{chat.username}")
+
+                if removed:
+                    results.append(f"✅ <code>{ch_raw}</code> → <code>{chat.id}</code> dihapus")
+                else:
+                    results.append(f"❌ <code>{ch_raw}</code> tidak ditemukan di daftar monitor")
+            except Exception:
+                results.append(f"❌ <code>{ch_raw}</code> tidak ditemukan di daftar monitor")
 
         await self.send_reply("<b>📋 Hasil Hapus Channel:</b>\n\n" + "\n".join(results), msg_id)
 
