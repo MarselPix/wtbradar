@@ -124,7 +124,14 @@ async def polling_loop(app: Client, config: Config, processor: MessageProcessor,
                             await processor.process_message(msg)
 
                 except Exception as e:
-                    logger.debug(f"Poll error for {target}: {e}")
+                    # Check for Pyrogram FloodWait without hard importing error class if missing
+                    err_name = type(e).__name__
+                    if "FloodWait" in err_name:
+                        wait_seconds = getattr(e, "value", getattr(e, "x", 10))
+                        logger.warning(f"Telegram FloodWait hit for {target}. Sleeping {wait_seconds}s...")
+                        await asyncio.sleep(wait_seconds)
+                    else:
+                        logger.debug(f"Poll error for {target}: {e}")
 
         except Exception as e:
             logger.error(f"Polling loop error: {e}")
