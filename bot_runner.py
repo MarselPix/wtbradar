@@ -39,45 +39,22 @@ class BotRunner:
     # ── Keyboards ──────────────────────────────────────────────────────────────
 
     def get_main_keyboard(self) -> dict:
-        """Compact 1-row persistent Reply Keyboard."""
+        """Compact 3-row persistent Reply Keyboard — always visible, never buried."""
         stop_btn = "⏹ Stop Radar" if self.radar_active else "▶️ Start Radar"
         return {
-            "keyboard": [[
-                {"text": "☰ Buka Menu"},
-                {"text": stop_btn},
-                {"text": "🔔 Test Notif"},
-            ]],
+            "keyboard": [
+                [{"text": stop_btn}, {"text": "🔔 Test Notif"}, {"text": "📊 Status"}],
+                [{"text": "➕ Channel"}, {"text": "➕ Keyword"}, {"text": "➕ Filter"}],
+                [{"text": "➖ Channel"}, {"text": "➖ Keyword"}, {"text": "➖ Filter"}],
+                [{"text": "📡 List CH"}, {"text": "🔑 List KW"}, {"text": "❓ Help"}],
+            ],
             "resize_keyboard": True,
             "is_persistent": True,
         }
 
     def get_menu_inline_keyboard(self) -> dict:
-        """Full management Inline Keyboard, sent inside a message."""
-        return {
-            "inline_keyboard": [
-                [
-                    {"text": "📡 List Channel",    "callback_data": "list_ch"},
-                    {"text": "🔑 List Keyword",    "callback_data": "list_kw"},
-                ],
-                [
-                    {"text": "➕ Tambah Channel",  "callback_data": "add_ch"},
-                    {"text": "➕ Tambah Keyword",  "callback_data": "add_kw"},
-                ],
-                [
-                    {"text": "➖ Hapus Channel",   "callback_data": "del_ch"},
-                    {"text": "➖ Hapus Keyword",   "callback_data": "del_kw"},
-                ],
-                [
-                    {"text": "🚫 List Exclude",    "callback_data": "list_ex"},
-                    {"text": "➕ Exclude",          "callback_data": "add_ex"},
-                    {"text": "➖ Exclude",          "callback_data": "del_ex"},
-                ],
-                [
-                    {"text": "📊 Status Bot",      "callback_data": "status"},
-                    {"text": "❓ Help & Petunjuk", "callback_data": "help"},
-                ],
-            ]
-        }
+        """(Unused — kept for future use)"""
+        return {}
 
     # ── HTTP Helpers ───────────────────────────────────────────────────────────
 
@@ -175,11 +152,7 @@ class BotRunner:
                 await self.send_reply("🗑️ <b>Semua Exclude Filter dikosongkan.</b>", msg_id)
                 return
 
-            # ── Persistent Keyboard Buttons ────────────────────────────────────
-
-            if text == "☰ Buka Menu":
-                await self.cmd_open_menu(msg_id)
-                return
+            # ── Persistent Keyboard — Row 1: Control ──────────────────────────
 
             if text in ["▶️ Start Radar", "/start_radar"]:
                 await self.cmd_start_radar(msg_id)
@@ -193,10 +166,106 @@ class BotRunner:
                 await self.cmd_test_notif(msg_id)
                 return
 
+            if text in ["📊 Status", "/status"]:
+                await self.cmd_status(msg_id)
+                return
+
+            # ── Persistent Keyboard — Row 2: Add ──────────────────────────────
+
+            if text == "➕ Channel":
+                self.pending_state = "awaiting_add_channel"
+                await self.send_reply(
+                    "📥 <b>TAMBAH CHANNEL MONITOR</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan username / link channel.\n"
+                    "Bisa banyak sekaligus dipisah koma:\n\n"
+                    "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            if text == "➕ Keyword":
+                self.pending_state = "awaiting_add_kw"
+                await self.send_reply(
+                    "➕ <b>TAMBAH KEYWORD WTB</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata kunci baru, bisa banyak sekaligus dipisah koma:\n\n"
+                    "• Contoh: <code>canva, capcut, youtube</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            if text == "➕ Filter":
+                self.pending_state = "awaiting_add_ex"
+                await self.send_reply(
+                    "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan kata yang jika ada dalam pesan akan diabaikan\n"
+                    "(meski ada keyword cocok).\n\n"
+                    "• Contoh: <code>wts, jual, ready stock</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            # ── Persistent Keyboard — Row 3: Remove ───────────────────────────
+
+            if text == "➖ Channel":
+                self.pending_state = "awaiting_del_channel"
+                await self.send_reply(
+                    "🗑️ <b>HAPUS CHANNEL MONITOR</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan username atau ID channel yang ingin dihapus:\n\n"
+                    "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            if text == "➖ Keyword":
+                self.pending_state = "awaiting_del_kw"
+                await self.send_reply(
+                    "➖ <b>HAPUS KEYWORD WTB</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan keyword yang ingin dihapus:\n\n"
+                    "• Contoh: <code>canva, capcut</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            if text == "➖ Filter":
+                self.pending_state = "awaiting_del_ex"
+                await self.send_reply(
+                    "➖ <b>HAPUS EXCLUDE FILTER</b>\n"
+                    "───────────────────────────\n"
+                    "Kirimkan filter yang ingin dihapus:\n\n"
+                    "• Contoh: <code>wts, jual</code>\n\n"
+                    "Ketik <code>batal</code> untuk membatalkan.",
+                    msg_id
+                )
+                return
+
+            # ── Persistent Keyboard — Row 4: List & Help ──────────────────────
+
+            if text in ["📡 List CH", "/listch"]:
+                await self.cmd_list_channels(msg_id)
+                return
+
+            if text in ["🔑 List KW", "/listkw"]:
+                await self.cmd_list_keywords(msg_id)
+                return
+
+            if text in ["❓ Help", "/help"]:
+                await self.cmd_help(msg_id)
+                return
+
             # ── Fallback ───────────────────────────────────────────────────────
             await self.send_reply(
                 "❓ Perintah tidak dikenali.\n"
-                "Klik <b>☰ Buka Menu</b> untuk melihat semua fitur yang tersedia.",
+                "Gunakan tombol keyboard di bawah untuk akses semua fitur.",
                 msg_id
             )
 
