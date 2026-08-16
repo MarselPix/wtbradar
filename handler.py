@@ -118,18 +118,29 @@ class MessageProcessor:
                 if raw_id.startswith("-100"):
                     post_url = f"https://t.me/c/{raw_id[4:]}/{msg_id}"
 
-            # 5. Extract WIB timestamp from message
+            # 5. Extract WIB timestamp from message (UTC+7)
             time_str = None
             try:
-                msg_date = message.date  # UTC datetime or Unix int
-                if isinstance(msg_date, int):
-                    msg_date = datetime.fromtimestamp(msg_date, tz=timezone.utc)
-                elif msg_date.tzinfo is None:
-                    msg_date = msg_date.replace(tzinfo=timezone.utc)
-                wib_time = msg_date.astimezone(WIB)
+                # message.date in Pyrogram is usually datetime (naive or UTC) or Unix int
+                msg_date = message.date
+                if isinstance(msg_date, (int, float)):
+                    # Unix timestamp is in UTC
+                    wib_time = datetime.fromtimestamp(msg_date, tz=timezone.utc).astimezone(WIB)
+                elif isinstance(msg_date, datetime):
+                    if msg_date.tzinfo is not None:
+                        wib_time = msg_date.astimezone(WIB)
+                    else:
+                        # Pyrogram message.date is UTC naive -> force UTC then convert to WIB
+                        wib_time = msg_date.replace(tzinfo=timezone.utc).astimezone(WIB)
+                else:
+                    # Fallback to current WIB time
+                    wib_time = datetime.now(WIB)
+
                 time_str = wib_time.strftime("%H:%M")
-            except Exception:
-                pass  # time_str stays None — notifier handles gracefully
+            except Exception as e:
+                logger.debug(f"Time parsing error: {e}")
+                # Safe fallback
+                time_str = datetime.now(WIB).strftime("%H:%M")
 
             logger.info(f"✅ MATCH! Channel: '{channel_title}' | KW: '{matched_kw}' | {text[:60]!r}")
 
