@@ -1,6 +1,6 @@
 """
 notifier.py — Sends instant notifications via Telegram Bot API using httpx.
-Uses HTML formatting and includes an inline button linking directly to the channel post.
+Uses clean Compact Card format (Option A) with minimal emoji.
 """
 
 import html
@@ -24,49 +24,59 @@ class Notifier:
         message_text: str,
         message_id: int,
         matched_keyword: str,
-        post_url: Optional[str] = None
+        post_url: Optional[str] = None,
+        time_str: Optional[str] = None,
     ) -> bool:
         """
-        Sends formatted Telegram notification via Bot API.
+        Sends a clean Compact Card notification to the target chat.
+        Format (Option A):
+            ⚡ WTB Match Ditemukan
+
+            Channel  : BASE WIB
+            Keyword  : capcut
+            Waktu    : 08:42 WIB
+
+            "cari capcut premium dong..."
+
+            [→ Lihat Postingan]
         """
-        # Determine direct post URL
+        # ── Resolve post URL ──────────────────────────────────────────────────
         if not post_url:
             if channel_username:
                 post_url = f"https://t.me/{channel_username}/{message_id}"
             else:
-                clean_id = str(channel_title).replace("-100", "").lstrip("-")
+                clean_id = str(channel_title).lstrip("-").replace("100", "", 1) \
+                    if str(channel_title).startswith("-100") else str(channel_title)
                 post_url = f"https://t.me/c/{clean_id}/{message_id}"
 
-        # Clean/truncate message text
-        clean_text = message_text.strip()
-        if len(clean_text) > 300:
-            clean_text = clean_text[:297] + "..."
-        safe_text = html.escape(clean_text)
+        # ── Clean & truncate message ──────────────────────────────────────────
+        snippet = message_text.strip()
+        if len(snippet) > 280:
+            snippet = snippet[:277] + "..."
 
-        safe_title = html.escape(str(channel_title) if channel_title else "Channel")
+        # ── Build formatted message ───────────────────────────────────────────
+        safe_title   = html.escape(str(channel_title) if channel_title else "Channel")
         safe_keyword = html.escape(matched_keyword)
+        safe_snippet = html.escape(snippet)
+        time_line    = f"\n<b>Waktu</b>    : {html.escape(time_str)} WIB" if time_str else ""
 
-        formatted_msg = (
-            f"🎯 <b>WTB RADAR MATCHED!</b>\n\n"
-            f"📌 <b>Channel:</b> {safe_title}\n"
-            f"🔑 <b>Matched Keyword:</b> <code>{safe_keyword}</code>\n\n"
-            f"💬 <b>Message Content:</b>\n<i>\"{safe_text}\"</i>"
+        body = (
+            "⚡ <b>WTB Match Ditemukan</b>\n\n"
+            f"<b>Channel</b>  : {safe_title}\n"
+            f"<b>Keyword</b>  : <code>{safe_keyword}</code>"
+            f"{time_line}\n\n"
+            f"\"<i>{safe_snippet}</i>\""
         )
 
         payload = {
             "chat_id": self.target_chat_id,
-            "text": formatted_msg,
+            "text": body,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
             "reply_markup": {
-                "inline_keyboard": [
-                    [
-                        {
-                            "text": "🚀 Buka Postingan / Komentar",
-                            "url": post_url
-                        }
-                    ]
-                ]
+                "inline_keyboard": [[
+                    {"text": "→ Lihat Postingan", "url": post_url}
+                ]]
             }
         }
 
@@ -74,7 +84,7 @@ class Notifier:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.post(self.api_url, json=payload)
                 if res.status_code == 200 and res.json().get("ok"):
-                    logger.info(f"Notification sent successfully for msg {message_id} in {channel_title}")
+                    logger.info(f"Notification sent: msg {message_id} in {channel_title}")
                     return True
                 else:
                     logger.error(f"Failed to send notification: {res.text}")
@@ -89,7 +99,7 @@ class Notifier:
             "chat_id": self.target_chat_id,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": True
+            "disable_web_page_preview": True,
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
