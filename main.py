@@ -190,11 +190,11 @@ async def main():
         f"👤 <b>Akun:</b> {me.first_name} (@{me.username or me.id})\n"
         f"📡 <b>Channels:</b> {len(config.monitored_channels)}\n"
         f"🔑 <b>Keywords:</b> {len(config.keywords)}\n"
-        f"⏱️ <b>Poll interval:</b> {POLL_INTERVAL_SECONDS} detik\n\n"
-        "Mode: <b>Active Polling + Push Realtime</b> 🔁"
+        f"⏱️ <b>Interval:</b> {POLL_INTERVAL_SECONDS} detik (Realtime)\n\n"
+        "💡 <i>Gunakan tombol <b>Menu [/]</b> di pojok kiri bawah atau ketik <code>/help</code> untuk melihat daftar perintah.</i>"
     )
-    await notifier.send_system_message(startup_msg, reply_markup=bot_runner.get_main_keyboard())
-    logger.info("WTB Radar active — polling + push mode.")
+    await notifier.send_system_message(startup_msg, reply_markup=bot_runner.get_remove_keyboard())
+    logger.info("WTB Radar active — clean slash command mode.")
 
     stop_event = asyncio.Event()
 

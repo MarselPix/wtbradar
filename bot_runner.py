@@ -1,11 +1,11 @@
 """
 bot_runner.py — Management Bot Runner.
-Handles Telegram Bot API long-polling, inline keyboard callbacks, and
-all management commands (add/remove channel, keyword, exclude).
+Handles Telegram Bot API long-polling and slash commands (/start_radar, /stop_radar, /addkw, etc.).
 
-Keyboard architecture:
-  - Persistent Reply Keyboard: 1 row only (☰ Menu | Start/Stop | Test)
-  - Management actions: Inline Keyboard inside a menu message
+Clean UX Architecture:
+  - No intrusive Reply Keyboard (Screen is 100% clean for WTB notifications).
+  - Registers official Telegram Bot Command Menu (`setMyCommands`).
+  - Supports both direct argument commands (e.g. `/addkw canva, capcut`) and interactive prompt states.
 """
 
 import asyncio
@@ -22,6 +22,25 @@ from config import Config
 
 logger = logging.getLogger("WTBRadar.bot_runner")
 
+BOT_COMMANDS = [
+    {"command": "start_radar", "description": "▶️ Aktifkan monitoring radar"},
+    {"command": "stop_radar",  "description": "⏹ Hentikan / Jeda monitoring"},
+    {"command": "status",      "description": "📊 Cek status bot & radar"},
+    {"command": "addkw",       "description": "➕ Tambah keyword WTB baru"},
+    {"command": "delkw",       "description": "➖ Hapus keyword WTB"},
+    {"command": "listkw",      "description": "🔑 Lihat semua keyword aktif"},
+    {"command": "addch",       "description": "➕ Tambah channel monitor"},
+    {"command": "delch",       "description": "➖ Hapus channel monitor"},
+    {"command": "listch",      "description": "📡 Lihat semua channel monitor"},
+    {"command": "addex",       "description": "🚫 Tambah exclude filter (abaikan kata)"},
+    {"command": "delex",       "description": "➖ Hapus exclude filter"},
+    {"command": "listex",      "description": "🚫 Lihat exclude filter aktif"},
+    {"command": "test",        "description": "🔔 Test koneksi notifikasi bot"},
+    {"command": "help",        "description": "❓ Panduan lengkap penggunaan"},
+    {"command": "clearkw",     "description": "🗑️ Kosongkan semua keyword"},
+    {"command": "clearex",     "description": "🗑️ Kosongkan semua exclude filter"},
+]
+
 
 class BotRunner:
     def __init__(self, config: Config, pyrogram_client: Client):
@@ -33,30 +52,33 @@ class BotRunner:
         self._offset        = 0
         self.is_running     = False
         self.pending_state: Optional[str] = None
-        # Controls whether radar actively monitors channels
         self.radar_active: bool = True
 
-    # ── Keyboards ──────────────────────────────────────────────────────────────
+    # ── Remove Keyboard Helper ────────────────────────────────────────────────
 
-    def get_main_keyboard(self) -> dict:
-        """Compact 3-row persistent Reply Keyboard — always visible, never buried."""
-        stop_btn = "⏹ Stop Radar" if self.radar_active else "▶️ Start Radar"
-        return {
-            "keyboard": [
-                [{"text": stop_btn}, {"text": "🔔 Test Notif"}, {"text": "📊 Status"}],
-                [{"text": "➕ Channel"}, {"text": "➕ Keyword"}, {"text": "➕ Filter"}],
-                [{"text": "➖ Channel"}, {"text": "➖ Keyword"}, {"text": "➖ Filter"}],
-                [{"text": "📡 List CH"}, {"text": "🔑 List KW"}, {"text": "❓ Help"}],
-            ],
-            "resize_keyboard": True,
-            "is_persistent": True,
-        }
-
-    def get_menu_inline_keyboard(self) -> dict:
-        """(Unused — kept for future use)"""
-        return {}
+    def get_remove_keyboard(self) -> dict:
+        """Removes any persistent reply keyboard so the chat view stays 100% clean."""
+        return {"remove_keyboard": True}
 
     # ── HTTP Helpers ───────────────────────────────────────────────────────────
+
+    async def register_bot_commands(self) -> bool:
+        """Registers slash commands to Telegram so they appear in the native Menu popup."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    f"{self.base_url}/setMyCommands",
+                    json={"commands": BOT_COMMANDS}
+                )
+                if res.status_code == 200 and res.json().get("ok"):
+                    logger.info("Successfully registered Telegram Bot Commands Menu.")
+                    return True
+                else:
+                    logger.warning(f"Failed to set bot commands: {res.text}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error registering bot commands: {e}")
+            return False
 
     async def send_reply(self, text: str, reply_to_msg_id: int = None,
                          custom_keyboard=None) -> bool:
@@ -80,28 +102,11 @@ class BotRunner:
             logger.error(f"send_reply error: {e}")
             return False
 
-    async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
-        """Answer a callback query to remove the loading spinner on the button."""
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(
-                    f"{self.base_url}/answerCallbackQuery",
-                    json={"callback_query_id": callback_query_id, "text": text}
-                )
-        except Exception:
-            pass
-
     # ── Update Dispatcher ──────────────────────────────────────────────────────
 
     async def handle_update(self, update: dict):
-        """Route incoming update to the correct handler."""
+        """Route incoming message updates to appropriate slash command handler."""
         try:
-            # ── Inline Button Callback ─────────────────────────────────────────
-            if "callback_query" in update:
-                await self.handle_callback_query(update["callback_query"])
-                return
-
-            # ── Text Message ───────────────────────────────────────────────────
             message = update.get("message") or update.get("edited_message")
             if not message:
                 return
@@ -109,163 +114,189 @@ class BotRunner:
             msg_id = message.get("message_id")
             chat   = message.get("chat", {})
 
-            # Only respond to the owner's chat
+            # Security: Only respond to owner chat
             if chat.get("id") != self.target_chat_id:
                 return
 
-            text = (message.get("text") or "").strip()
-            if not text:
+            raw_text = (message.get("text") or "").strip()
+            if not raw_text:
                 return
 
-            # ── Cancel ────────────────────────────────────────────────────────
-            if text.lower() in ["batal", "/cancel", "❌ batal"]:
+            # Cancel ongoing input state
+            if raw_text.lower() in ["batal", "/cancel", "cancel", "❌ batal"]:
                 self.pending_state = None
                 await self.send_reply("❌ <b>Operasi dibatalkan.</b>", msg_id)
                 return
 
-            # ── Pending State: waiting for user text input ─────────────────────
+            # ── Check Interactive Pending State ──────────────────────────────
             if self.pending_state:
                 state = self.pending_state
                 self.pending_state = None
                 if state == "awaiting_add_channel":
-                    await self.cmd_add_channel(text, msg_id)
+                    await self.cmd_add_channel(raw_text, msg_id)
                 elif state == "awaiting_del_channel":
-                    await self.cmd_del_channel(text, msg_id)
+                    await self.cmd_del_channel(raw_text, msg_id)
                 elif state == "awaiting_add_kw":
-                    await self.cmd_add_kw(text, msg_id)
+                    await self.cmd_add_kw(raw_text, msg_id)
                 elif state == "awaiting_del_kw":
-                    await self.cmd_del_kw(text, msg_id)
+                    await self.cmd_del_kw(raw_text, msg_id)
                 elif state == "awaiting_add_ex":
-                    await self.cmd_add_ex(text, msg_id)
+                    await self.cmd_add_ex(raw_text, msg_id)
                 elif state == "awaiting_del_ex":
-                    await self.cmd_del_ex(text, msg_id)
+                    await self.cmd_del_ex(raw_text, msg_id)
                 return
 
-            # ── Utility text commands ──────────────────────────────────────────
-            if text.lower() in ["/clearkw", "/resetkw"]:
-                self.config.clear_keywords()
-                await self.send_reply("🗑️ <b>Semua Keyword WTB dikosongkan.</b>", msg_id)
+            # ── Parse Command & Arguments ────────────────────────────────────
+            # Supports both "/addkw canva, capcut" and "/addkw" (with bot username suffix stripped)
+            parts = raw_text.split(maxsplit=1)
+            cmd_part = parts[0].lower().split("@")[0]  # e.g., "/start_radar@bot" -> "/start_radar"
+            args = parts[1].strip() if len(parts) > 1 else ""
+
+            # ── Route Commands ───────────────────────────────────────────────
+
+            if cmd_part in ["/start", "/menu"]:
+                await self.cmd_start_intro(msg_id)
                 return
 
-            if text.lower() in ["/clearex", "/resetex"]:
-                self.config.clear_excludes()
-                await self.send_reply("🗑️ <b>Semua Exclude Filter dikosongkan.</b>", msg_id)
-                return
-
-            # ── Persistent Keyboard — Row 1: Control ──────────────────────────
-
-            if text in ["▶️ Start Radar", "/start_radar"]:
+            if cmd_part == "/start_radar":
                 await self.cmd_start_radar(msg_id)
                 return
 
-            if text in ["⏹ Stop Radar", "/stop_radar"]:
+            if cmd_part == "/stop_radar":
                 await self.cmd_stop_radar(msg_id)
                 return
 
-            if text in ["🔔 Test Notif", "/test"]:
-                await self.cmd_test_notif(msg_id)
-                return
-
-            if text in ["📊 Status", "/status"]:
+            if cmd_part in ["/status", "/info"]:
                 await self.cmd_status(msg_id)
                 return
 
-            # ── Persistent Keyboard — Row 2: Add ──────────────────────────────
-
-            if text == "➕ Channel":
-                self.pending_state = "awaiting_add_channel"
-                await self.send_reply(
-                    "📥 <b>TAMBAH CHANNEL MONITOR</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan username / link channel.\n"
-                    "Bisa banyak sekaligus dipisah koma:\n\n"
-                    "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
+            if cmd_part in ["/test", "/test_notif"]:
+                await self.cmd_test_notif(msg_id)
                 return
 
-            if text == "➕ Keyword":
-                self.pending_state = "awaiting_add_kw"
-                await self.send_reply(
-                    "➕ <b>TAMBAH KEYWORD WTB</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan kata kunci baru, bisa banyak sekaligus dipisah koma:\n\n"
-                    "• Contoh: <code>canva, capcut, youtube</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
+            if cmd_part in ["/help", "/panduan"]:
+                await self.cmd_help(msg_id)
                 return
 
-            if text == "➕ Filter":
-                self.pending_state = "awaiting_add_ex"
-                await self.send_reply(
-                    "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan kata yang jika ada dalam pesan akan diabaikan\n"
-                    "(meski ada keyword cocok).\n\n"
-                    "• Contoh: <code>wts, jual, ready stock</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
-                return
-
-            # ── Persistent Keyboard — Row 3: Remove ───────────────────────────
-
-            if text == "➖ Channel":
-                self.pending_state = "awaiting_del_channel"
-                await self.send_reply(
-                    "🗑️ <b>HAPUS CHANNEL MONITOR</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan username atau ID channel yang ingin dihapus:\n\n"
-                    "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
-                return
-
-            if text == "➖ Keyword":
-                self.pending_state = "awaiting_del_kw"
-                await self.send_reply(
-                    "➖ <b>HAPUS KEYWORD WTB</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan keyword yang ingin dihapus:\n\n"
-                    "• Contoh: <code>canva, capcut</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
-                return
-
-            if text == "➖ Filter":
-                self.pending_state = "awaiting_del_ex"
-                await self.send_reply(
-                    "➖ <b>HAPUS EXCLUDE FILTER</b>\n"
-                    "───────────────────────────\n"
-                    "Kirimkan filter yang ingin dihapus:\n\n"
-                    "• Contoh: <code>wts, jual</code>\n\n"
-                    "Ketik <code>batal</code> untuk membatalkan.",
-                    msg_id
-                )
-                return
-
-            # ── Persistent Keyboard — Row 4: List & Help ──────────────────────
-
-            if text in ["📡 List CH", "/listch"]:
-                await self.cmd_list_channels(msg_id)
-                return
-
-            if text in ["🔑 List KW", "/listkw"]:
+            # ── Keywords ──────────────────────────────────────────────────────
+            if cmd_part == "/listkw":
                 await self.cmd_list_keywords(msg_id)
                 return
 
-            if text in ["❓ Help", "/help"]:
-                await self.cmd_help(msg_id)
+            if cmd_part == "/addkw":
+                if args:
+                    await self.cmd_add_kw(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_add_kw"
+                    await self.send_reply(
+                        "➕ <b>TAMBAH KEYWORD WTB</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan kata kunci WTB baru (bisa banyak sekaligus dipisah koma):\n\n"
+                        "• Contoh: <code>canva, capcut, youtube, yt famp</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            if cmd_part == "/delkw":
+                if args:
+                    await self.cmd_del_kw(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_del_kw"
+                    await self.send_reply(
+                        "➖ <b>HAPUS KEYWORD WTB</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan keyword yang ingin dihapus:\n\n"
+                        "• Contoh: <code>canva, capcut</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            if cmd_part in ["/clearkw", "/resetkw"]:
+                self.config.clear_keywords()
+                await self.send_reply("🗑️ <b>Semua Keyword WTB berhasil dikosongkan.</b>", msg_id)
+                return
+
+            # ── Channels ──────────────────────────────────────────────────────
+            if cmd_part == "/listch":
+                await self.cmd_list_channels(msg_id)
+                return
+
+            if cmd_part == "/addch":
+                if args:
+                    await self.cmd_add_channel(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_add_channel"
+                    await self.send_reply(
+                        "📥 <b>TAMBAH CHANNEL MONITOR</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan username / link invite channel (bisa banyak sekaligus dipisah koma):\n\n"
+                        "• Contoh: <code>@basewtb, @BASELELANG, @basewib</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            if cmd_part == "/delch":
+                if args:
+                    await self.cmd_del_channel(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_del_channel"
+                    await self.send_reply(
+                        "🗑️ <b>HAPUS CHANNEL MONITOR</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan username atau ID channel yang ingin dihapus:\n\n"
+                        "• Contoh: <code>@basewtb, @BASELELANG</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            # ── Excludes ──────────────────────────────────────────────────────
+            if cmd_part == "/listex":
+                await self.cmd_list_excludes(msg_id)
+                return
+
+            if cmd_part == "/addex":
+                if args:
+                    await self.cmd_add_ex(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_add_ex"
+                    await self.send_reply(
+                        "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan kata yang ingin diabaikan jika muncul di pesan:\n\n"
+                        "• Contoh: <code>wts, jual, ready stock, price list</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            if cmd_part == "/delex":
+                if args:
+                    await self.cmd_del_ex(args, msg_id)
+                else:
+                    self.pending_state = "awaiting_del_ex"
+                    await self.send_reply(
+                        "➖ <b>HAPUS EXCLUDE FILTER</b>\n"
+                        "───────────────────────────\n"
+                        "Kirimkan exclude filter yang ingin dihapus:\n\n"
+                        "• Contoh: <code>wts, jual</code>\n\n"
+                        "<i>Ketik <code>batal</code> untuk membatalkan.</i>",
+                        msg_id
+                    )
+                return
+
+            if cmd_part in ["/clearex", "/resetex"]:
+                self.config.clear_excludes()
+                await self.send_reply("🗑️ <b>Semua Exclude Filter berhasil dikosongkan.</b>", msg_id)
                 return
 
             # ── Fallback ───────────────────────────────────────────────────────
             await self.send_reply(
-                "❓ Perintah tidak dikenali.\n"
-                "Gunakan tombol keyboard di bawah untuk akses semua fitur.",
+                "❓ Perintah tidak dikenali.\n\n"
+                "Ketik <code>/help</code> atau klik tombol <b>Menu [/]</b> di pojok kiri bawah untuk melihat daftar perintah.",
                 msg_id
             )
 
@@ -276,140 +307,65 @@ class BotRunner:
             except Exception:
                 pass
 
-    async def handle_callback_query(self, cq: dict):
-        """Handle inline keyboard button presses (callback queries)."""
-        cq_id  = cq["id"]
-        data   = cq.get("data", "")
-        msg_id = cq.get("message", {}).get("message_id")
+    # ── Command Implementations ────────────────────────────────────────────────
 
-        # Dismiss loading spinner immediately
-        await self.answer_callback(cq_id)
-
-        # Direct action handlers
-        direct = {
-            "list_ch": self.cmd_list_channels,
-            "list_kw": self.cmd_list_keywords,
-            "list_ex": self.cmd_list_excludes,
-            "status":  self.cmd_status,
-            "help":    self.cmd_help,
-        }
-        if data in direct:
-            await direct[data](msg_id)
-            return
-
-        # Actions that require follow-up text input
-        prompts = {
-            "add_ch": (
-                "awaiting_add_channel",
-                "📥 <b>TAMBAH CHANNEL MONITOR</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan username / link channel.\n"
-                "Bisa banyak sekaligus dipisah koma:\n\n"
-                "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-            "del_ch": (
-                "awaiting_del_channel",
-                "🗑️ <b>HAPUS CHANNEL MONITOR</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan username atau ID channel yang ingin dihapus.\n"
-                "Bisa banyak sekaligus dipisah koma:\n\n"
-                "• Contoh: <code>@channelwtb1, @channelwtb2</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-            "add_kw": (
-                "awaiting_add_kw",
-                "➕ <b>TAMBAH KEYWORD WTB</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata kunci baru.\n"
-                "Bisa banyak sekaligus dipisah koma:\n\n"
-                "• Contoh: <code>canva, capcut, youtube</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-            "del_kw": (
-                "awaiting_del_kw",
-                "➖ <b>HAPUS KEYWORD WTB</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan keyword yang ingin dihapus:\n\n"
-                "• Contoh: <code>canva, capcut</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-            "add_ex": (
-                "awaiting_add_ex",
-                "🚫 <b>TAMBAH EXCLUDE FILTER</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan kata yang jika ditemukan dalam pesan,\n"
-                "pesan tersebut akan diabaikan meski ada keyword cocok.\n\n"
-                "• Contoh: <code>wts, jual, ready stock</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-            "del_ex": (
-                "awaiting_del_ex",
-                "➖ <b>HAPUS EXCLUDE FILTER</b>\n"
-                "───────────────────────────\n"
-                "Kirimkan filter yang ingin dihapus:\n\n"
-                "• Contoh: <code>wts, jual</code>\n\n"
-                "Ketik <code>batal</code> untuk membatalkan."
-            ),
-        }
-        if data in prompts:
-            state, prompt_text = prompts[data]
-            self.pending_state = state
-            await self.send_reply(prompt_text, msg_id)
-
-    # ── Persistent Keyboard Handlers ───────────────────────────────────────────
-
-    async def cmd_open_menu(self, msg_id: int):
-        """Send full inline management menu."""
-        radar_status = "🟢 Radar: AKTIF" if self.radar_active else "🔴 Radar: PAUSE"
-        await self.send_reply(
-            f"<b>⚙️ WTB RADAR — MENU UTAMA</b>\n"
-            f"───────────────────────────\n"
-            f"{radar_status}  ·  "
-            f"📡 {len(self.config.monitored_channels)} Channel  ·  "
-            f"🔑 {len(self.config.keywords)} Keyword\n\n"
-            "Pilih aksi di bawah:",
-            msg_id,
-            custom_keyboard=self.get_menu_inline_keyboard()
+    async def cmd_start_intro(self, msg_id: int):
+        """Intro message on /start or /menu."""
+        radar_status = "🟢 <b>AKTIF &amp; MONITORING</b>" if self.radar_active else "🔴 <b>PAUSE / BERHENTI</b>"
+        intro_text = (
+            "⚡ <b>WTB RADAR CONTROL PANEL</b>\n"
+            "───────────────────────────\n"
+            f"<b>Status Radar:</b> {radar_status}\n"
+            f"📡 <b>Channel:</b> {len(self.config.monitored_channels)}\n"
+            f"🔑 <b>Keyword:</b> {len(self.config.keywords)}\n"
+            f"🚫 <b>Exclude:</b> {len(self.config.excludes)}\n\n"
+            "<b>🚀 Perintah Cepat:</b>\n"
+            "• <code>/start_radar</code> — ▶️ Aktifkan Radar\n"
+            "• <code>/stop_radar</code> — ⏹ Hentikan Radar\n"
+            "• <code>/addkw [kata]</code> — ➕ Tambah Keyword\n"
+            "• <code>/addch [channel]</code> — ➕ Tambah Channel\n"
+            "• <code>/status</code> — 📊 Info Detail\n"
+            "• <code>/help</code> — ❓ Panduan Lengkap\n\n"
+            "<i>💡 Klik tombol <b>Menu [/]</b> di pojok kiri bawah keyboard untuk melihat semua menu.</i>"
         )
+        # Ensure any old persistent keyboard is cleaned up
+        await self.send_reply(intro_text, msg_id, custom_keyboard=self.get_remove_keyboard())
 
     async def cmd_start_radar(self, msg_id: int):
         if self.radar_active:
-            await self.send_reply("ℹ️ Radar sudah dalam keadaan <b>AKTIF</b>.", msg_id)
+            await self.send_reply("ℹ️ Radar sudah dalam keadaan <b>AKTIF</b>!", msg_id)
         else:
             self.radar_active = True
             await self.send_reply(
-                "▶️ <b>Radar dinyalakan!</b>\n\n"
-                "🟢 WTB Radar sekarang <b>AKTIF &amp; MONITORING</b>.",
-                msg_id,
-                custom_keyboard=self.get_main_keyboard()
+                "▶️ <b>RADAR DIAKTIFKAN!</b>\n\n"
+                "🟢 WTB Radar sekarang <b>AKTIF &amp; MONITORING</b> secara real-time.\n"
+                f"📡 Channel: <b>{len(self.config.monitored_channels)}</b> | "
+                f"🔑 Keyword: <b>{len(self.config.keywords)}</b>",
+                msg_id
             )
 
     async def cmd_stop_radar(self, msg_id: int):
         if not self.radar_active:
-            await self.send_reply("ℹ️ Radar sudah dalam keadaan <b>PAUSE</b>.", msg_id)
+            await self.send_reply("ℹ️ Radar sudah dalam keadaan <b>BERHENTI (PAUSE)</b>!", msg_id)
         else:
             self.radar_active = False
             await self.send_reply(
-                "⏹ <b>Radar dihentikan!</b>\n\n"
-                "🔴 Monitoring dimatikan — notif WTB tidak akan dikirim.\n"
-                "Klik <b>▶️ Start Radar</b> untuk mengaktifkan kembali.",
-                msg_id,
-                custom_keyboard=self.get_main_keyboard()
+                "⏹ <b>RADAR DIHENTIKAN (PAUSE)!</b>\n\n"
+                "🔴 Monitoring sementara dinonaktifkan — notifikasi WTB tidak akan dikirim.\n"
+                "Ketik <code>/start_radar</code> untuk mengaktifkan kembali.",
+                msg_id
             )
 
     async def cmd_test_notif(self, msg_id: int):
         await self.send_reply(
-            "🔔 <b>TEST NOTIFIKASI — OK!</b>\n\n"
-            "✅ Sistem notifikasi <b>berfungsi normal</b>.\n\n"
-            f"📡 Channels dimonitor : <b>{len(self.config.monitored_channels)}</b>\n"
-            f"🔑 Keywords aktif     : <b>{len(self.config.keywords)}</b>\n"
-            f"🚫 Exclude filter     : <b>{len(self.config.excludes)}</b>\n"
-            f"Radar                 : <b>{'AKTIF ✅' if self.radar_active else 'PAUSE ❌'}</b>",
+            "🔔 <b>TEST NOTIFIKASI — BERHASIL!</b>\n\n"
+            "✅ Sistem bot berjalan normal.\n\n"
+            f"📡 Channels Dimonitor : <b>{len(self.config.monitored_channels)}</b>\n"
+            f"🔑 Keywords WTB Aktif : <b>{len(self.config.keywords)}</b>\n"
+            f"🚫 Exclude Filter     : <b>{len(self.config.excludes)}</b>\n"
+            f"Status Radar          : <b>{'🟢 AKTIF' if self.radar_active else '🔴 PAUSE'}</b>",
             msg_id
         )
-
-    # ── Inline Menu Handlers ───────────────────────────────────────────────────
 
     async def cmd_status(self, msg_id: int):
         channels  = self.config.monitored_channels
@@ -419,52 +375,48 @@ class BotRunner:
         await self.send_reply(
             f"<b>📊 WTB RADAR STATUS</b>\n"
             f"───────────────────────────\n"
-            f"Radar    : {radar_str}\n"
-            f"Channels : <b>{len(channels)}</b>\n"
-            f"Keywords : <b>{len(kws)}</b>\n"
-            f"Excludes : <b>{len(exs)}</b>\n"
-            f"Cooldown : <b>{self.config.cooldown_seconds}s</b>\n"
-            f"Engine   : <b>Pyrogram + Active Polling (3s)</b>",
+            f"<b>Radar:</b> {radar_str}\n"
+            f"📡 <b>Monitored Channels:</b> {len(channels)}\n"
+            f"🔑 <b>WTB Keywords:</b> {len(kws)}\n"
+            f"🚫 <b>Exclusion Keywords:</b> {len(exs)}\n"
+            f"⏱️ <b>Anti-Duplicate Cooldown:</b> {self.config.cooldown_seconds}s\n"
+            f"⚡ <b>Engine:</b> Pyrogram + Active Polling (3s)",
             msg_id
         )
 
     async def cmd_help(self, msg_id: int):
         await self.send_reply(
-            "<b>❓ PANDUAN WTB RADAR</b>\n"
+            "<b>❓ PANDUAN PENGGUNAAN WTB RADAR</b>\n"
             "───────────────────────────\n\n"
 
             "<b>📡 Channel Monitor</b>\n"
-            "Daftar channel Telegram yang dipantau bot secara aktif. "
-            "Bot mengecek pesan baru setiap beberapa detik. "
-            "Tambahkan channel dengan <code>@username</code> atau link invite.\n\n"
+            "Channel Telegram yang dicek bot setiap 3 detik.\n"
+            "• <code>/addch @basewtb, @BASELELANG</code> — Tambah channel\n"
+            "• <code>/delch @basewtb</code> — Hapus channel\n"
+            "• <code>/listch</code> — Lihat daftar channel\n\n"
 
-            "<b>🔑 WTB Keywords</b>\n"
-            "Kata kunci yang dicari di setiap pesan channel. "
-            "Bot hanya mencocokkan <b>kata utuh</b> — bukan huruf yang nyempil di tengah kata lain.\n"
-            "• <code>am</code> cocok dengan \"cari <b>am</b> dong\" ✅\n"
-            "• <code>am</code> <b>tidak</b> cocok dengan \"desk<b>cam</b>\" ❌\n\n"
+            "<b>🔑 Keyword WTB</b>\n"
+            "Kata kunci target yang dicari dalam postingan channel.\n"
+            "Pencocokan berupa <b>kata utuh</b> (bukan potongan kata):\n"
+            "• <code>/addkw canva, capcut, yt, am</code> — Tambah keyword\n"
+            "• <code>/delkw canva, yt</code> — Hapus keyword\n"
+            "• <code>/listkw</code> — Lihat daftar keyword\n"
+            "• <code>/clearkw</code> — Reset semua keyword\n\n"
 
             "<b>🚫 Exclude Filter</b>\n"
-            "Jika kata ini ditemukan dalam pesan, pesan tersebut <b>diabaikan</b> "
-            "meski ada keyword yang cocok. Berguna untuk filter \"jual\", \"wts\", \"ready\" "
-            "agar seller mode tidak masuk notif.\n\n"
+            "Kata yang jika muncul di pesan, otomatis <b>diabaikan</b> agar tidak ada spam seller.\n"
+            "• <code>/addex wts, jual, ready</code> — Tambah filter\n"
+            "• <code>/delex wts</code> — Hapus filter\n"
+            "• <code>/listex</code> — Lihat daftar filter\n"
+            "• <code>/clearex</code> — Reset semua filter\n\n"
 
-            "<b>➕ / ➖ Tambah &amp; Hapus</b>\n"
-            "Bisa input banyak sekaligus dipisah koma:\n"
-            "• <code>canva, capcut, yt</code>\n\n"
+            "<b>⚙️ Kontrol Radar</b>\n"
+            "• <code>/start_radar</code> — ▶️ Mulai monitoring\n"
+            "• <code>/stop_radar</code> — ⏹ Jeda monitoring\n"
+            "• <code>/status</code> — 📊 Status bot saat ini\n"
+            "• <code>/test</code> — 🔔 Tes koneksi notif\n\n"
 
-            "<b>▶️ Start / ⏹ Stop Radar</b>\n"
-            "Aktifkan atau jeda monitoring. Bot tetap bisa digunakan, "
-            "hanya notif WTB yang dihentikan.\n\n"
-
-            "<b>🔔 Test Notif</b>\n"
-            "Verifikasi bot bisa kirim pesan. Jika Test OK tapi notif WTB tidak muncul, "
-            "periksa apakah channel dan keyword sudah ditambahkan dengan benar.\n\n"
-
-            "<b>⌨️ Command Teks</b>\n"
-            "• <code>/clearkw</code> — Hapus <b>semua</b> keyword\n"
-            "• <code>/clearex</code> — Hapus <b>semua</b> exclude filter\n"
-            "• <code>batal</code> — Batalkan operasi yang sedang berjalan",
+            "<i>💡 Tips: Lo bisa langsung ketik command beserta isinya, contoh: <code>/addkw netflix, spotify, canva</code></i>",
             msg_id
         )
 
@@ -473,7 +425,8 @@ class BotRunner:
         if not channels:
             await self.send_reply(
                 "<b>📡 Channel Monitor (0)</b>\n\n"
-                "Belum ada channel. Klik <b>➕ Tambah Channel</b> di menu.",
+                "Belum ada channel dimonitor.\n"
+                "Ketik <code>/addch @username</code> untuk menambahkan.",
                 msg_id
             )
             return
@@ -486,14 +439,16 @@ class BotRunner:
         kws = sorted(list(self.config.keywords))
         if not kws:
             await self.send_reply(
-                "<b>🔑 Keyword WTB (0)</b>\n\nBelum ada keyword. Klik <b>➕ Tambah Keyword</b>.",
+                "<b>🔑 Keyword WTB (0)</b>\n\n"
+                "Belum ada keyword WTB aktif.\n"
+                "Ketik <code>/addkw canva, capcut</code> untuk menambahkan.",
                 msg_id
             )
             return
         kw_fmt = " · ".join(f"<code>{html.escape(k)}</code>" for k in kws)
         await self.send_reply(
             f"<b>🔑 Keyword WTB Aktif ({len(kws)}):</b>\n\n{kw_fmt}\n\n"
-            "Ketik <code>/clearkw</code> untuk hapus semua.",
+            "💡 <i>Ketik <code>/clearkw</code> untuk mengosongkan semua.</i>",
             msg_id
         )
 
@@ -501,14 +456,16 @@ class BotRunner:
         exs = sorted(list(self.config.excludes))
         if not exs:
             await self.send_reply(
-                "<b>🚫 Exclude Filter (0)</b>\n\nBelum ada filter. Klik <b>➕ Exclude</b>.",
+                "<b>🚫 Exclude Filter (0)</b>\n\n"
+                "Belum ada filter abaikan.\n"
+                "Ketik <code>/addex wts, jual</code> untuk menambahkan.",
                 msg_id
             )
             return
         ex_fmt = " · ".join(f"<code>{html.escape(e)}</code>" for e in exs)
         await self.send_reply(
-            f"<b>🚫 Exclude Filter ({len(exs)}):</b>\n\n{ex_fmt}\n\n"
-            "Ketik <code>/clearex</code> untuk hapus semua.",
+            f"<b>🚫 Exclude Filter Aktif ({len(exs)}):</b>\n\n{ex_fmt}\n\n"
+            "💡 <i>Ketik <code>/clearex</code> untuk mengosongkan semua.</i>",
             msg_id
         )
 
@@ -534,11 +491,11 @@ class BotRunner:
         raw_items = [ch.strip() for ch in re.split(r"[,\n]", args) if ch.strip()]
         results   = []
         for ch_raw in raw_items:
-            # Try exact match first
+            # Exact match
             if self.config.remove_channel(ch_raw):
                 results.append(f"• <code>{ch_raw}</code> — dihapus ✅")
                 continue
-            # Resolve via Pyrogram (e.g. @basewtb → -1001525948158)
+            # Resolve via Pyrogram
             try:
                 chat    = await self.app.get_chat(ch_raw)
                 removed = self.config.remove_channel(str(chat.id))
@@ -586,6 +543,9 @@ class BotRunner:
 
     async def start_polling(self):
         """Runs async long-polling for Telegram Bot API updates."""
+        # Auto-register slash commands to Telegram native menu
+        await self.register_bot_commands()
+
         self.is_running = True
         logger.info("Management Bot polling started...")
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -596,7 +556,7 @@ class BotRunner:
                         params={
                             "offset":           self._offset,
                             "timeout":          10,
-                            "allowed_updates":  ["message", "callback_query"],
+                            "allowed_updates":  ["message"],
                         }
                     )
                     if res.status_code == 200:
