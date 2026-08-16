@@ -414,9 +414,9 @@ class BotRunner:
             "• <code>/start_radar</code> — ▶️ Mulai monitoring\n"
             "• <code>/stop_radar</code> — ⏹ Jeda monitoring\n"
             "• <code>/status</code> — 📊 Status bot saat ini\n"
-            "• <code>/test</code> — 🔔 Tes koneksi notif\n\n"
+            "• <code>/test</code> — 🔔 Tes koneksi notifikasi\n\n"
 
-            "<i>💡 Tips: Lo bisa langsung ketik command beserta isinya, contoh: <code>/addkw netflix, spotify, canva</code></i>",
+            "<i>💡 Tips: Anda dapat langsung mengetik perintah beserta isinya, contoh: <code>/addkw netflix, spotify, canva</code></i>",
             msg_id
         )
 
