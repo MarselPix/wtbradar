@@ -36,7 +36,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("WTBRadar.main")
 
 # ─── Poll Interval ────────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 3    # Check each channel every 3 seconds (near-instant)
+POLL_INTERVAL_SECONDS = 1    # ⚡ Reduced from 3s → 1s for near-instant detection
 POLL_HISTORY_LIMIT   = 10   # How many recent messages to fetch per channel per poll
 
 
@@ -62,17 +62,67 @@ async def warm_up_peer_cache(app: Client, config: Config):
             logger.warning(f"Could not resolve {target}: {e}")
 
 
-async def polling_loop(app: Client, config: Config, processor: MessageProcessor,
-                       bot_runner: BotRunner):
+async def poll_single_channel(
+    app: Client,
+    target: str,
+    last_seen_id: dict,
+    processor: "MessageProcessor",
+) -> None:
     """
-    PRIMARY detection engine.
-    Actively polls every channel using get_chat_history().
-    100% reliable — does not depend on Pyrogram push updates.
+    Poll a single channel for new messages since last_seen_id.
+    Runs concurrently alongside other channels via asyncio.gather().
     """
-    # last_seen_id[channel_str] = highest message ID already processed
+    key = str(target)
+
+    # First-time baseline for newly added channels — skip processing, just record
+    if key not in last_seen_id:
+        try:
+            async for msg in app.get_chat_history(target, limit=1):
+                last_seen_id[key] = msg.id
+                logger.info(f"Baseline set [{target}]: msg_id={msg.id}")
+        except Exception:
+            last_seen_id[key] = 0
+        return
+
+    baseline = last_seen_id[key]
+
+    try:
+        new_msgs = []
+        async for msg in app.get_chat_history(target, limit=POLL_HISTORY_LIMIT):
+            if msg.id <= baseline:
+                break
+            new_msgs.append(msg)
+
+        if new_msgs:
+            # Update baseline to the highest (newest) message ID seen
+            last_seen_id[key] = new_msgs[0].id
+            logger.info(f"📥 {len(new_msgs)} new msg(s) in [{target}]")
+
+            # Process chronologically — oldest first
+            for msg in reversed(new_msgs):
+                await processor.process_message(msg)
+
+    except Exception as e:
+        err_name = type(e).__name__
+        if "FloodWait" in err_name:
+            wait_seconds = getattr(e, "value", getattr(e, "x", 10))
+            logger.warning(f"FloodWait on [{target}] — sleeping {wait_seconds}s")
+            await asyncio.sleep(wait_seconds)
+        else:
+            logger.debug(f"Poll error [{target}]: {e}")
+
+
+async def polling_loop(app: Client, config: Config, processor: "MessageProcessor",
+                       bot_runner: "BotRunner"):
+    """
+    PRIMARY detection engine — PARALLEL edition.
+
+    All monitored channels are polled SIMULTANEOUSLY every POLL_INTERVAL_SECONDS.
+    This eliminates the sequential bottleneck (old: N×0.3s, new: ~0.3s regardless of N).
+    """
     last_seen_id: dict = {}
 
-    # ── Initialise baselines so we don't re-notify old messages ──────────────
+    # ── Set baselines (sequential, one-time at startup) ───────────────────────
     logger.info("Polling: setting baselines for all channels...")
     for target in config.monitored_channels:
         key = str(target)
@@ -84,7 +134,7 @@ async def polling_loop(app: Client, config: Config, processor: MessageProcessor,
             last_seen_id[key] = 0
             logger.warning(f"Baseline failed for {target}: {e}")
 
-    logger.info(f"Polling started — interval={POLL_INTERVAL_SECONDS}s")
+    logger.info(f"⚡ Parallel polling started — interval={POLL_INTERVAL_SECONDS}s")
 
     while True:
         try:
@@ -92,46 +142,16 @@ async def polling_loop(app: Client, config: Config, processor: MessageProcessor,
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
-            # Hot-reload channels on every cycle
-            monitored = config.monitored_channels
-            for target in monitored:
-                key = str(target)
-                baseline = last_seen_id.get(key, 0)
-
-                # Initialise baseline for newly added channels
-                if key not in last_seen_id:
-                    try:
-                        async for msg in app.get_chat_history(target, limit=1):
-                            last_seen_id[key] = msg.id
-                    except Exception:
-                        last_seen_id[key] = 0
-                    continue
-
-                try:
-                    new_msgs = []
-                    async for msg in app.get_chat_history(target, limit=POLL_HISTORY_LIMIT):
-                        if msg.id <= baseline:
-                            break
-                        new_msgs.append(msg)
-
-                    if new_msgs:
-                        # Update baseline to highest ID seen
-                        last_seen_id[key] = new_msgs[0].id
-                        logger.info(f"📥 {len(new_msgs)} new message(s) in channel {target}")
-
-                        # Process chronologically (oldest first)
-                        for msg in reversed(new_msgs):
-                            await processor.process_message(msg)
-
-                except Exception as e:
-                    # Check for Pyrogram FloodWait without hard importing error class if missing
-                    err_name = type(e).__name__
-                    if "FloodWait" in err_name:
-                        wait_seconds = getattr(e, "value", getattr(e, "x", 10))
-                        logger.warning(f"Telegram FloodWait hit for {target}. Sleeping {wait_seconds}s...")
-                        await asyncio.sleep(wait_seconds)
-                    else:
-                        logger.debug(f"Poll error for {target}: {e}")
+            monitored = list(config.monitored_channels)
+            if monitored:
+                # ── Fire all channel polls SIMULTANEOUSLY ─────────────────────
+                await asyncio.gather(
+                    *[
+                        poll_single_channel(app, target, last_seen_id, processor)
+                        for target in monitored
+                    ],
+                    return_exceptions=True  # Never let one failed channel kill the whole loop
+                )
 
         except Exception as e:
             logger.error(f"Polling loop error: {e}")
