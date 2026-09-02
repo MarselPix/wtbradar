@@ -164,9 +164,13 @@ async def polling_loop(app: Client, config: Config, processor: "MessageProcessor
 async def main():
     logger.info("Initializing WTB Radar Bot...")
 
-    config   = Config()
-    cooldown = CooldownManager(ttl_seconds=config.cooldown_seconds)
-    notifier = Notifier(bot_token=config.bot_token, target_chat_id=config.target_chat_id)
+    config    = Config()
+    cooldown  = CooldownManager(ttl_seconds=config.cooldown_seconds)
+    notifier  = Notifier(
+        bot_token       = config.bot_token,
+        target_chat_id  = config.target_chat_id,
+        notif_bot_token = config.notif_bot_token,  # separate notif bot (fallback to bot_token if not set)
+    )
     processor = MessageProcessor(config=config, cooldown=cooldown, notifier=notifier)
 
     app = Client(
@@ -176,7 +180,7 @@ async def main():
         workdir="."
     )
 
-    bot_runner = BotRunner(config=config, pyrogram_client=app)
+    bot_runner = BotRunner(config=config, pyrogram_client=app, notifier=notifier)
 
     # ── BONUS: real-time push handler (fires when Pyrogram delivers it) ───────
     @app.on_message()

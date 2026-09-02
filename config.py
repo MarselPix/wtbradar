@@ -243,6 +243,28 @@ class Config:
         return self.data["bot_token"]
 
     @property
+    def notif_bot_token(self) -> str:
+        """
+        Separate bot token used ONLY for sending WTB match notifications.
+        Falls back to bot_token if not set (single-bot mode).
+        """
+        return self.data.get("notif_bot_token") or self.data["bot_token"]
+
+    def set_notif_bot_token(self, token: str) -> None:
+        """Persist the notification bot token to config.json."""
+        self.load()
+        self.data["notif_bot_token"] = token.strip()
+        self.save()
+        logger.info("Notification bot token updated.")
+
+    def clear_notif_bot_token(self) -> None:
+        """Remove the separate notification bot token (revert to single-bot mode)."""
+        self.load()
+        self.data.pop("notif_bot_token", None)
+        self.save()
+        logger.info("Notification bot token cleared — reverted to single-bot mode.")
+
+    @property
     def target_chat_id(self) -> int:
         return int(self.data["target_chat_id"])
 

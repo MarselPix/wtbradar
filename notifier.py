@@ -12,10 +12,20 @@ logger = logging.getLogger("WTBRadar.notifier")
 
 
 class Notifier:
-    def __init__(self, bot_token: str, target_chat_id: int):
-        self.bot_token = bot_token
-        self.target_chat_id = target_chat_id
-        self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+    def __init__(self, bot_token: str, target_chat_id: int, notif_bot_token: str = None):
+        self.bot_token       = bot_token        # Management bot (commands, /status, etc.)
+        self.notif_bot_token = notif_bot_token or bot_token  # Notification bot (WTB alerts)
+        self.target_chat_id  = target_chat_id
+        # Management bot API URL (used for system messages)
+        self.api_url         = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        # Notification bot API URL (used for WTB match alerts)
+        self.notif_api_url   = f"https://api.telegram.org/bot{self.notif_bot_token}/sendMessage"
+
+    def update_notif_token(self, new_token: str) -> None:
+        """Hot-update the notification bot token without restarting."""
+        self.notif_bot_token = new_token
+        self.notif_api_url   = f"https://api.telegram.org/bot{self.notif_bot_token}/sendMessage"
+        logger.info("Notifier: notification bot token updated (hot-reload).")
 
     async def send_match_notification(
         self,
@@ -82,7 +92,7 @@ class Notifier:
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(self.api_url, json=payload)
+                res = await client.post(self.notif_api_url, json=payload)
                 if res.status_code == 200 and res.json().get("ok"):
                     logger.info(f"Notification sent: msg {message_id} in {channel_title}")
                     return True

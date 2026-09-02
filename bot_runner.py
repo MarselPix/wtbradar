@@ -23,29 +23,32 @@ from config import Config
 logger = logging.getLogger("WTBRadar.bot_runner")
 
 BOT_COMMANDS = [
-    {"command": "start_radar", "description": "▶️ Aktifkan monitoring radar"},
-    {"command": "stop_radar",  "description": "⏹ Hentikan / Jeda monitoring"},
-    {"command": "status",      "description": "📊 Cek status bot & radar"},
-    {"command": "addkw",       "description": "➕ Tambah keyword WTB baru"},
-    {"command": "delkw",       "description": "➖ Hapus keyword WTB"},
-    {"command": "listkw",      "description": "🔑 Lihat semua keyword aktif"},
-    {"command": "addch",       "description": "➕ Tambah channel monitor"},
-    {"command": "delch",       "description": "➖ Hapus channel monitor"},
-    {"command": "listch",      "description": "📡 Lihat semua channel monitor"},
-    {"command": "addex",       "description": "🚫 Tambah exclude filter (abaikan kata)"},
-    {"command": "delex",       "description": "➖ Hapus exclude filter"},
-    {"command": "listex",      "description": "🚫 Lihat exclude filter aktif"},
-    {"command": "test",        "description": "🔔 Test koneksi notifikasi bot"},
-    {"command": "help",        "description": "❓ Panduan lengkap penggunaan"},
-    {"command": "clearkw",     "description": "🗑️ Kosongkan semua keyword"},
-    {"command": "clearex",     "description": "🗑️ Kosongkan semua exclude filter"},
+    {"command": "start_radar",   "description": "▶️ Aktifkan monitoring radar"},
+    {"command": "stop_radar",    "description": "⏹ Hentikan / Jeda monitoring"},
+    {"command": "status",        "description": "📊 Cek status bot & radar"},
+    {"command": "addkw",         "description": "➕ Tambah keyword WTB baru"},
+    {"command": "delkw",         "description": "➖ Hapus keyword WTB"},
+    {"command": "listkw",        "description": "🔑 Lihat semua keyword aktif"},
+    {"command": "addch",         "description": "➕ Tambah channel monitor"},
+    {"command": "delch",         "description": "➖ Hapus channel monitor"},
+    {"command": "listch",        "description": "📡 Lihat semua channel monitor"},
+    {"command": "addex",         "description": "🚫 Tambah exclude filter (abaikan kata)"},
+    {"command": "delex",         "description": "➖ Hapus exclude filter"},
+    {"command": "listex",        "description": "🚫 Lihat exclude filter aktif"},
+    {"command": "setnotifbot",   "description": "🤖 Daftarkan bot khusus notifikasi WTB"},
+    {"command": "clearnotifbot", "description": "🔄 Hapus bot notif — kembali ke bot utama"},
+    {"command": "test",          "description": "🔔 Test koneksi notifikasi bot"},
+    {"command": "help",          "description": "❓ Panduan lengkap penggunaan"},
+    {"command": "clearkw",       "description": "🗑️ Kosongkan semua keyword"},
+    {"command": "clearex",       "description": "🗑️ Kosongkan semua exclude filter"},
 ]
 
 
 class BotRunner:
-    def __init__(self, config: Config, pyrogram_client: Client):
+    def __init__(self, config: Config, pyrogram_client: Client, notifier=None):
         self.config         = config
         self.app            = pyrogram_client
+        self.notifier       = notifier  # Reference to Notifier for hot-updating notif token
         self.bot_token      = config.bot_token
         self.target_chat_id = config.target_chat_id
         self.base_url       = f"https://api.telegram.org/bot{self.bot_token}"
@@ -176,6 +179,15 @@ class BotRunner:
 
             if cmd_part in ["/help", "/panduan"]:
                 await self.cmd_help(msg_id)
+                return
+
+            # ── Notification Bot Registration ─────────────────────────────────
+            if cmd_part == "/setnotifbot":
+                await self.cmd_set_notif_bot(args, msg_id)
+                return
+
+            if cmd_part == "/clearnotifbot":
+                await self.cmd_clear_notif_bot(msg_id)
                 return
 
             # ── Keywords ──────────────────────────────────────────────────────
@@ -330,6 +342,88 @@ class BotRunner:
         )
         # Ensure any old persistent keyboard is cleaned up
         await self.send_reply(intro_text, msg_id, custom_keyboard=self.get_remove_keyboard())
+
+    async def cmd_set_notif_bot(self, args: str, msg_id: int):
+        """Register a separate bot token for WTB match notifications."""
+        token = args.strip()
+
+        if not token:
+            await self.send_reply(
+                "🤖 <b>DAFTARKAN BOT NOTIFIKASI WTB</b>\n"
+                "───────────────────────────\n\n"
+                "<b>Cara mendapatkan token:</b>\n"
+                "1. Buka @BotFather di Telegram\n"
+                "2. Ketik <code>/newbot</code>\n"
+                "3. Ikuti langkah-langkah pembuatan bot\n"
+                "4. Salin token yang diberikan (contoh: <code>1234567890:AAHxxx...</code>)\n\n"
+                "<b>Lalu kirim perintah:</b>\n"
+                "<code>/setnotifbot TOKEN_BOT_KAMU</code>\n\n"
+                "<i>Setelah terdaftar, semua notifikasi WTB Match akan dikirim melalui bot baru tersebut — "
+                "bukan melalui bot manajemen ini.</i>",
+                msg_id
+            )
+            return
+
+        # Basic token format validation: digits:alphanum (min length 35 chars)
+        import re as _re
+        if not _re.match(r"^\d{8,12}:[A-Za-z0-9_-]{35,}$", token):
+            await self.send_reply(
+                "❌ <b>Format token tidak valid!</b>\n\n"
+                "Token bot harus berformat:\n"
+                "<code>1234567890:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code>\n\n"
+                "Pastikan token disalin dengan benar dari @BotFather.",
+                msg_id
+            )
+            return
+
+        # Verify token is actually valid by calling getMe
+        try:
+            async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+                res = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+                data = res.json()
+                if not data.get("ok"):
+                    await self.send_reply(
+                        "❌ <b>Token tidak valid atau bot tidak ditemukan!</b>\n\n"
+                        "Pastikan token yang dimasukkan benar dan bot masih aktif.",
+                        msg_id
+                    )
+                    return
+                bot_info = data["result"]
+                bot_name     = html.escape(bot_info.get("first_name", ""))
+                bot_username = html.escape(bot_info.get("username", ""))
+        except Exception as e:
+            await self.send_reply(
+                f"⚠️ <b>Gagal memverifikasi token:</b> <code>{html.escape(str(e))}</code>",
+                msg_id
+            )
+            return
+
+        # Save to config & hot-update notifier
+        self.config.set_notif_bot_token(token)
+        if self.notifier:
+            self.notifier.update_notif_token(token)
+
+        await self.send_reply(
+            "✅ <b>Bot Notifikasi WTB berhasil didaftarkan!</b>\n\n"
+            f"🤖 <b>Nama Bot :</b> {bot_name}\n"
+            f"📎 <b>Username :</b> @{bot_username}\n\n"
+            "Mulai sekarang, semua notifikasi <b>WTB Match</b> akan dikirim melalui "
+            f"@{bot_username} — bukan melalui bot manajemen ini.\n\n"
+            f"💡 <i>Buka @{bot_username} dan klik <b>START</b> untuk mulai menerima notifikasi!</i>",
+            msg_id
+        )
+
+    async def cmd_clear_notif_bot(self, msg_id: int):
+        """Remove the separate notification bot and revert to single-bot mode."""
+        self.config.clear_notif_bot_token()
+        if self.notifier:
+            self.notifier.update_notif_token(self.config.bot_token)
+        await self.send_reply(
+            "🔄 <b>Bot notifikasi terpisah dihapus.</b>\n\n"
+            "Sistem kembali ke mode bot tunggal — notifikasi WTB akan dikirim "
+            "melalui bot manajemen ini kembali.",
+            msg_id
+        )
 
     async def cmd_start_radar(self, msg_id: int):
         if self.radar_active:
